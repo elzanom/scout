@@ -138,6 +138,123 @@ export async function fetchWalletPortfolio(wallet) {
 }
 
 /**
+ * Wallet lifetime realized-PnL summary from Meteora. Complements portfolio/open with closed
+ * position totals. Lightweight, public, no auth.
+ * @param {string} wallet
+ * @returns {Promise<{ totalPnlUsd: number, totalPnlPctChange: number, totalClosedPositions: number }>}
+ */
+export async function fetchWalletPortfolioTotal(wallet) {
+  return withRetry(async () => {
+    const res = await fetch(`${POOL_PORTFOLIO_BASE}/portfolio/total?user=${encodeURIComponent(wallet)}`);
+    if (!res.ok) {
+      const e = new Error(`portfolio/total ${res.status} ${res.statusText}`);
+      e.status = res.status;
+      throw e;
+    }
+    const d = await res.json();
+    return {
+      totalPnlUsd: Number(d.totalPnlUsd) || 0,
+      totalPnlPctChange: Number(d.totalPnlPctChange) || 0,
+      totalClosedPositions: Number(d.totalClosedPositions) || 0,
+    };
+  });
+}
+
+/**
+ * Per-pool position PnL history from Meteora. Returns both open and closed positions with
+ * bin range, deposits, withdrawals, fees, and close timestamps. Much richer than LPAgent
+ * (which only covers top-3 historical owners per pool).
+ * @param {string} wallet
+ * @param {string} poolAddress
+ * @param {{ status?: 'all'|'closed'|'open', pageSize?: number }} opts
+ * @returns {Promise<object[]>}
+ */
+export async function fetchPoolPositionPnl(wallet, poolAddress, { status = "all", pageSize = 100 } = {}) {
+  return withRetry(async () => {
+    const url = `${POOL_PORTFOLIO_BASE}/positions/${encodeURIComponent(poolAddress)}/pnl` +
+      `?user=${encodeURIComponent(wallet)}` +
+      `&status=${encodeURIComponent(status)}` +
+      `&page=1&page_size=${pageSize}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      const e = new Error(`positions/pnl ${res.status} ${res.statusText}`);
+      e.status = res.status;
+      throw e;
+    }
+    const d = await res.json();
+    const tokenXSymbol = d.tokenX || "";
+    const tokenYSymbol = d.tokenY || "";
+    const positions = Array.isArray(d.positions) ? d.positions : [];
+    return positions.map((p) => ({
+      positionAddress: p.positionAddress,
+      poolAddress,
+      tokenXSymbol,
+      tokenYSymbol,
+      tokenPair: `${tokenXSymbol}/${tokenYSymbol}`.replace(/^\//, ""),
+      minPrice: Number(p.minPrice) || null,
+      maxPrice: Number(p.maxPrice) || null,
+      lowerBinId: Number(p.lowerBinId) ?? null,
+      upperBinId: Number(p.upperBinId) ?? null,
+      poolActiveBinId: Number(p.poolActiveBinId) ?? null,
+      isOutOfRange: p.isOutOfRange === true,
+      isClosed: p.isClosed === true,
+      createdAt: Number(p.createdAt) || null,
+      closedAt: Number(p.closedAt) || null,
+      pnlUsd: Number(p.pnlUsd) || 0,
+      pnlSol: Number(p.pnlSol) || 0,
+      pnlPctChange: Number(p.pnlPctChange) || 0,
+      feePerTvl24h: Number(p.feePerTvl24h) || 0,
+      depositsUsd: Number(p.allTimeDeposits?.total?.usd) || 0,
+      withdrawalsUsd: Number(p.allTimeWithdrawals?.total?.usd) || 0,
+      feesUsd: Number(p.allTimeFees?.total?.usd) || 0,
+      tokenXPrice: Number(d.tokenXPrice) || null,
+      tokenYPrice: Number(d.tokenYPrice) || null,
+      solPrice: Number(d.solPrice) || null,
+    }));
+  });
+}
+
+/**
+ * Full wallet position history across all pools. Fetches the wallet's portfolio list and then
+ * per-pool position PnL details in parallel. Used by the evaluator to reconstruct closed
+ * positions without relying solely on LPAgent.
+ * @param {string} wallet
+ * @param {{ status?: 'all'|'closed'|'open', daysBack?: number, pageSize?: number }} opts
+ * @returns {Promise<{ totalClosedPositions: number, positions: object[] }>}
+ */
+export async function fetchWalletPositionHistory(wallet, { status = "all", daysBack = 365, pageSize = 100 } = {}) {
+  const summary = await withRetry(async () => {
+    const res = await fetch(
+      `${POOL_PORTFOLIO_BASE}/portfolio?user=${encodeURIComponent(wallet)}` +
+      `&page=1&page_size=50&days_back=${daysBack}`,
+    );
+    if (!res.ok) {
+      const e = new Error(`portfolio ${res.status} ${res.statusText}`);
+      e.status = res.status;
+      throw e;
+    }
+    return res.json();
+  });
+
+  const pools = Array.isArray(summary?.pools) ? summary.pools : [];
+  const uniquePools = [...new Set(pools.map((p) => p?.poolAddress).filter(Boolean))];
+
+  const all = await Promise.allSettled(
+    uniquePools.map((pool) => fetchPoolPositionPnl(wallet, pool, { status, pageSize })),
+  );
+
+  const positions = [];
+  for (const r of all) {
+    if (r.status === "fulfilled") positions.push(...r.value);
+  }
+
+  return {
+    totalClosedPositions: Number(summary?.totalClosedPositions) || 0,
+    positions,
+  };
+}
+
+/**
  * The screening timeframe may be shorter than 30m, where volatility is not meaningful.
  * Tag the primary-TF values on each pool, then — if needed — re-fetch the longer-TF
  * volume/volatility per pool and use those as the canonical values for filtering.

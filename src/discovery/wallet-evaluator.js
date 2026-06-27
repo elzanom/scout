@@ -1,7 +1,7 @@
 import { config } from "../../config/config.js";
 import { log } from "../utils/logger.js";
 import { studyTopLPers, runConcurrent } from "./pool-discovery.js";
-import { fetchWalletPortfolio } from "../screener/metrics-fetcher.js";
+import { fetchWalletPortfolio, fetchWalletPortfolioTotal, fetchWalletPositionHistory } from "../screener/metrics-fetcher.js";
 import { backfillWalletActivity } from "../collector/helius-history.js";
 import { upsertPosition, positionStats, getPositionsByWallet } from "../db/positions.js";
 import { getWallet, listWallets, updateWalletMetrics, setWalletTier, bumpEvaluation, updateWalletStrategy } from "../db/wallets.js";
@@ -87,6 +87,33 @@ export function applyEvaluation(address, aggregate, positions = []) {
 }
 
 /**
+ * Map a Meteora position/pnl row (from fetchPoolPositionPnl) to the scout position schema.
+ */
+function positionFromMeteora(p) {
+  const entry = p.createdAt ? Math.floor(p.createdAt) : null;
+  const exit = p.closedAt ? Math.floor(p.closedAt) : null;
+  return {
+    id: p.positionAddress,
+    wallet_address: null, // filled by caller
+    pool_address: p.poolAddress,
+    token_pair: p.tokenPair || null,
+    entry_timestamp: entry,
+    bin_lower: p.lowerBinId ?? null,
+    bin_upper: p.upperBinId ?? null,
+    bin_range_width: (p.upperBinId != null && p.lowerBinId != null) ? p.upperBinId - p.lowerBinId : null,
+    capital_usd: p.depositsUsd || null,
+    exit_timestamp: exit,
+    fees_earned_usd: p.feesUsd || null,
+    pnl_usd: p.pnlUsd,
+    pnl_pct: p.pnlPctChange,
+    fee_yield: p.feePerTvl24h,
+    duration_hours: entry && exit ? (exit - entry) / 3600 : null,
+    is_profitable: p.pnlUsd != null ? (p.pnlUsd > 0 ? 1 : 0) : null,
+    status: p.isClosed ? "closed" : "open",
+  };
+}
+
+/**
  * Build a stub position row from a Helius WalletActivity event. We lack bins/capital/PnL
  * from Helius, so this is intentionally sparse — it adds to position count, pool breadth,
  * and last-active timing, while leaving financial fields for LPAgent / portfolio to fill.
@@ -160,14 +187,17 @@ async function fetchHeliusHistory(address) {
 }
 
 /**
- * Evaluate a single wallet by merging THREE data sources:
+ * Evaluate a single wallet by merging FOUR data sources:
  *  1. Helius history backfill: historical Meteora DLMM activity (position opens) to boost
  *     position count and pool breadth for wallets LPAgent does not rank as top-20.
  *  2. portfolio/open (reliable, always present): the wallet's OWN open positions — count,
- *     current PnL/fees per pool, and open win-rate (fraction of pools with positive PnL).
- *  3. LPAgent studyTopLPers across discovered_from + a cap of open pools + history pools:
- *     historical closed positions (for win-rate on realized outcomes) + aggregates.
- * portfolio/open + Helius history fix the coverage gap (LPAgent alone is too sparse).
+ *     current PnL/fees per pool, and open win-rate.
+ *  3. Meteora position PnL history: per-pool closed positions with bin range, deposits,
+ *     withdrawals, fees, and durations — independent of LPAgent coverage.
+ *  4. LPAgent studyTopLPers across discovered_from + open pools + history pools:
+ *     preferred strategy/range and supplementary aggregates.
+ * Meteora portfolio history is now the primary source for realized outcomes, reducing
+ * dependence on LPAgent's sparse top-3 historical coverage.
  */
 export async function evaluateWallet(address) {
   const wallet = getWallet(address);
@@ -176,7 +206,7 @@ export async function evaluateWallet(address) {
     return null;
   }
 
-  // 1) Helius history backfill (bounded by evaluationBackfillDays, default 90).
+  // 1) Helius history backfill (bounded by evaluationBackfillDays, default 30).
   const { extraPools, histPositions, histPoolCount, lastActiveAt } = await fetchHeliusHistory(address);
 
   // 2) Reliable current portfolio.
@@ -187,11 +217,28 @@ export async function evaluateWallet(address) {
     log("eval_warn", `portfolio/open ${address?.slice(0, 8)} failed: ${err.message}`);
   }
 
-  // 3) LPAgent breadth: discovered_from + open pools + pools discovered via Helius history.
+  // 3) Meteora position PnL history — independent, rich, covers all closed positions.
+  let meteoraPositions = [];
+  let meteoraTotalClosed = 0;
+  try {
+    const history = await fetchWalletPositionHistory(address, {
+      status: "all",
+      daysBack: config.discovery.evaluationBackfillDays,
+      pageSize: 100,
+    });
+    meteoraPositions = history.positions.map((p) => ({ ...positionFromMeteora(p), wallet_address: address }));
+    meteoraTotalClosed = history.totalClosedPositions;
+    log("eval", `meteora history ${address.slice(0, 8)}…: ${meteoraPositions.length} positions, ${meteoraTotalClosed} closed`);
+  } catch (err) {
+    log("eval_warn", `meteora position history ${address.slice(0, 8)} failed: ${err.message}`);
+  }
+
+  // 4) LPAgent breadth: discovered_from + open pools + history pools.
   const pools = new Set();
   if (wallet.discovered_from) pools.add(wallet.discovered_from);
   for (const p of portfolio.pools.slice(0, MAX_BREADTH_POOLS)) pools.add(p.poolAddress);
   for (const pool of extraPools) pools.add(pool);
+  for (const p of meteoraPositions) if (p.pool_address) pools.add(p.pool_address);
 
   let lpPnl = 0;
   let lpFees = 0;
@@ -221,29 +268,46 @@ export async function evaluateWallet(address) {
   }
   if (strategy) updateWalletStrategy(address, strategy);
 
-  // Merge history stubs behind LPAgent positions so LPAgent data wins on conflict.
-  for (const p of histPositions) allPositions.push(p);
+  // Merge Meteora positions (primary) and Helius stubs. Meteora data wins because it has
+  // full financials; LPAgent positions are already in allPositions.
+  const positionMap = new Map(allPositions.map((p) => [p.id, p]));
+  for (const p of meteoraPositions) positionMap.set(p.id, p);
+  for (const p of histPositions) if (!positionMap.has(p.id)) positionMap.set(p.id, p);
+  const mergedPositions = [...positionMap.values()];
 
   // Open win-rate: fraction of the wallet's pools that are NET positive (fees earned > IL).
-  // LP success = fees outweigh impermanent loss, so "win" = (pnl + unclaimedFees) > 0 — NOT
-  // price PnL alone, which understates LPs (most open positions carry unrealized IL).
   const netOf = (p) => p.pnl + p.unclaimedFees;
   const decided = portfolio.pools.filter((p) => netOf(p) !== 0);
   const openWinRate = decided.length ? decided.filter((p) => netOf(p) > 0).length / decided.length : 0;
   const mean = (arr) => (arr.length ? arr.reduce((s, x) => s + x, 0) / arr.length : 0);
 
+  // Total realized PnL from Meteora if available; otherwise fall back to portfolio + LPAgent sum.
+  let totalPnlUsd = portfolio.pools.reduce((s, p) => s + p.pnl, 0) + lpPnl;
+  let totalFeesUsd = portfolio.pools.reduce((s, p) => s + p.unclaimedFees, 0) + lpFees;
+  try {
+    const totals = await fetchWalletPortfolioTotal(address);
+    if (totals.totalPnlUsd !== 0 || totals.totalClosedPositions > 0) {
+      totalPnlUsd = totals.totalPnlUsd;
+      // Keep unclaimed fees from portfolio/open; Meteora /portfolio/total is realized-only.
+      totalFeesUsd = portfolio.pools.reduce((s, p) => s + p.unclaimedFees, 0) + lpFees;
+    }
+  } catch (err) {
+    log("eval_warn", `portfolio/total ${address.slice(0, 8)} failed: ${err.message}`);
+  }
+
   const aggregate = {
-    total_pnl_usd: portfolio.pools.reduce((s, p) => s + p.pnl, 0) + lpPnl,
-    total_fees_usd: portfolio.pools.reduce((s, p) => s + p.unclaimedFees, 0) + lpFees,
-    // open (portfolio) + closed (LPAgent) + historical stubs (Helius)
-    total_positions: portfolio.totalPositions + allPositions.length,
+    total_pnl_usd: totalPnlUsd,
+    total_fees_usd: totalFeesUsd,
+    // open (portfolio) + closed (Meteora + LPAgent) + historical stubs (Helius)
+    total_positions: portfolio.totalPositions + mergedPositions.length,
     fee_percent: portfolio.pools.length ? mean(portfolio.pools.map((p) => p.feePerTvl24h)) : mean(lpFeeYields),
     avg_age_hours: mean(lpAges),
     hist_pool_count: histPoolCount,
     last_active_position_at: lastActiveAt,
-    win_rate_pct: openWinRate * 100, // reliable open WR; applyEvaluation uses closed-position WR if ≥3 closed exist
+    win_rate_pct: openWinRate * 100,
+    meteora_total_closed: meteoraTotalClosed,
   };
-  return applyEvaluation(address, aggregate, allPositions);
+  return applyEvaluation(address, aggregate, mergedPositions);
 }
 
 /**

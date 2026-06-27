@@ -1,0 +1,13 @@
+node_modules/
+webui/node_modules/
+webui/.next/
+webui/out/
+src/webui-dist/
+.env
+scout-config.json
+data/*.db
+logs/*.log
+logs/*.jsonl
+dataset/*.csv
+.DS_Store
+meridian/

@@ -1,0 +1,33 @@
+{
+  "name": "laminar-scout",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Self-discovering LP wallet tracker + pool screener for Meteora DLMM (data pipeline for Laminar)",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "VERBOSE=true node src/index.js",
+    "seed": "node scripts/seed.js",
+    "backfill": "node scripts/backfill.js",
+    "pm2:start": "pm2 start ecosystem.config.cjs",
+    "pm2:restart": "pm2 restart laminar-scout --update-env",
+    "pm2:logs": "pm2 logs laminar-scout --lines 100",
+    "test": "npm run test:syntax",
+    "test:syntax": "find . -path ./node_modules -prune -o -path ./meridian -prune -o -path ./webui -prune -o -path ./src/webui-dist -prune -o -name '*.js' -exec node --check {} \\;",
+    "webui:build": "cd webui && npm run build",
+    "webui:dev": "cd webui && npm run dev",
+    "webui:start": "node src/webui-server.js"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.95.0",
+    "better-sqlite3": "^12.11.1",
+    "bn.js": "^5.2.1",
+    "bs58": "^5.0.0",
+    "dotenv": "^17.3.1",
+    "node-cron": "^3.0.3",
+    "ws": "^8.21.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

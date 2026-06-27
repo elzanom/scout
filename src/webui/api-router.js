@@ -4,6 +4,7 @@ import { getDb } from "../db/index.js";
 import { config } from "../../config/config.js";
 import { getStateCache, touchCycle } from "./state-cache.js";
 import { loadWeights, getWeightsSummary } from "../signals/weights.js";
+import { buildWalletInsight, exportWalletInsights } from "../dataset/insights.js";
 import { repoPath } from "../../repo-root.js";
 
 const VERSION = "0.1.0";
@@ -33,7 +34,7 @@ function limitOffset(q, defaults = { limit: 50, max: 500 }) {
   return { limit, offset };
 }
 
-export function handleApi(req, res) {
+export async function handleApi(req, res) {
   const url = new URL(req.url, "http://localhost");
   const q = parseQuery(url);
   const db = getDbSafe();
@@ -159,6 +160,32 @@ export function handleApi(req, res) {
 
       case "/api/weights": {
         return json(res, { weights: loadWeights(), summary: getWeightsSummary() });
+      }
+
+      case "/api/insights": {
+        const segments = url.pathname.split("/").filter(Boolean);
+        if (segments.length === 2) {
+          const address = segments[1];
+          const includeOpen = q.includeOpen !== "false";
+          const includeClosed = q.includeClosed !== "false";
+          try {
+            const insight = await buildWalletInsight(address, { includeOpen, includeClosed });
+            return json(res, { insight });
+          } catch (err) {
+            const status = err.message?.includes("not found") ? 404 : 500;
+            return json(res, { error: err.message }, status);
+          }
+        }
+
+        const statuses = q.statuses ? q.statuses.split(",").filter(Boolean) : ["top", "tracked"];
+        const limit = Math.min(parseInt(q.limit, 10) || 50, 500);
+        const format = ["json", "csv", "jsonl", "all"].includes(q.format) ? q.format : "json";
+        try {
+          const result = await exportWalletInsights({ statuses, limit, format });
+          return json(res, { ok: true, format, exported: result });
+        } catch (err) {
+          return json(res, { error: err.message }, 500);
+        }
       }
 
       default:

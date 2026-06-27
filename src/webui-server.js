@@ -24,7 +24,11 @@ function createWebuiServer() {
 
     // API routes
     if (url.pathname.startsWith("/api/")) {
-      handleApi(req, res);
+      handleApi(req, res).catch((err) => {
+        log("webui_error", `handleApi error: ${err.message}`);
+        res.writeHead(500, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "internal server error" }));
+      });
       return;
     }
 
@@ -75,7 +79,11 @@ export function mountWebui(server) {
     }
 
     if (url.pathname.startsWith("/api/")) {
-      handleApi(req, res);
+      handleApi(req, res).catch((err) => {
+        log("webui_error", `handleApi error: ${err.message}`);
+        res.writeHead(500, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "internal server error" }));
+      });
       return;
     }
 

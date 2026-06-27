@@ -33,6 +33,7 @@
   "minBinStep": 80,
   "maxBinStep": 125,
   "minTokenFeesSol": 30,
+  "requireSolPair": true,
 
   "// Signal Validation": "",
   "minCombinedConfidence": 0.70,

@@ -50,6 +50,7 @@ const DEFAULTS_FLAT = {
   minBinStep: 80,
   maxBinStep: 125,
   minTokenFeesSol: 30,
+  requireSolPair: true,         // only discover/evaluate pools paired with SOL
   // Pool Screening — discovery-API query + validation extras (mirror meridian config.screening).
   // Not listed in scout-config.example.json, so these defaults apply; overridable via scout-config.json.
   timeframe: "5m",
@@ -143,6 +144,7 @@ export const config = {
     minBinStep: m.minBinStep,
     maxBinStep: m.maxBinStep,
     minTokenFeesSol: m.minTokenFeesSol,
+    requireSolPair: m.requireSolPair,
     // discovery-API query + validation extras
     timeframe: m.timeframe,
     category: m.category,

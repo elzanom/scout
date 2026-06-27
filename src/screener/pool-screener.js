@@ -19,6 +19,20 @@ function includesCaseInsensitive(values, value) {
   return values.some((entry) => String(entry).toLowerCase() === needle);
 }
 
+const SOL_MINT = "So11111111111111111111111111111111111111112";
+const SOL_SYMBOLS = new Set(["sol", "wsol"]);
+
+function isSolToken(token) {
+  if (!token) return false;
+  const mint = String(token?.address || "").toLowerCase();
+  const symbol = String(token?.symbol || "").toLowerCase();
+  return mint === SOL_MINT.toLowerCase() || SOL_SYMBOLS.has(symbol);
+}
+
+function isSolPair(pool) {
+  return isSolToken(pool?.token_x) || isSolToken(pool?.token_y);
+}
+
 function getPoolLaunchpad(pool) {
   const base = pool?.token_x || {};
   return base?.launchpad ||
@@ -123,6 +137,9 @@ export function getRawPoolScreeningRejectReason(pool, s = config.screening) {
   if (s.maxTokenAgeHours != null) {
     const minCreatedAt = Date.now() - s.maxTokenAgeHours * 3_600_000;
     if (createdAt == null || createdAt < minCreatedAt) return `token age above maxTokenAgeHours ${s.maxTokenAgeHours}`;
+  }
+  if (s.requireSolPair && !isSolPair(pool)) {
+    return `not a SOL pair (${base?.symbol ?? "?"}/${quote?.symbol ?? "?"})`;
   }
   return null;
 }

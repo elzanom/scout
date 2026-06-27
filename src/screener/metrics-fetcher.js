@@ -131,6 +131,8 @@ export async function fetchWalletPortfolio(wallet) {
           feePerTvl24h: Number(p.feePerTvl24h) || 0,
           totalDeposit: Number(p.totalDeposit) || 0,
           openPositionCount: Number(p.openPositionCount) || 0,
+          tokenXSymbol: p.tokenX || "",
+          tokenYSymbol: p.tokenY || "",
         }))
       : [];
     return { totalPositions: Number(d.totalPositions) || 0, pools };

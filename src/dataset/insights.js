@@ -28,6 +28,22 @@ function gmgnUrl(tokenMintOrPool) {
   return `https://gmgn.ai/defi/quotation/v1/sol/${tokenMintOrPool}`;
 }
 
+const SOL_MINT = "So11111111111111111111111111111111111111112";
+const SOL_SYMBOLS = new Set(["sol", "wsol"]);
+
+function isSolToken(token) {
+  if (!token) return false;
+  const mint = String(token?.address || "").toLowerCase();
+  const symbol = String(token?.symbol || "").toLowerCase();
+  return mint === SOL_MINT.toLowerCase() || SOL_SYMBOLS.has(symbol);
+}
+
+function isSolPair(tokenPair) {
+  if (!tokenPair) return false;
+  const parts = String(tokenPair).toLowerCase().split("/");
+  return parts.some((p) => SOL_SYMBOLS.has(p.trim()));
+}
+
 function tokenLifetime(positions) {
   const byToken = new Map();
   for (const p of positions) {
@@ -133,16 +149,21 @@ export async function buildWalletInsight(address, { includeOpen = true, includeC
       daysBack: config.discovery.evaluationBackfillDays,
       pageSize: 100,
     });
-    meteoraPositions = history.positions;
+    meteoraPositions = config.screening.requireSolPair
+      ? history.positions.filter((p) => isSolPair(`${p.tokenXSymbol}/${p.tokenYSymbol}`))
+      : history.positions;
   } catch (err) {
     log("insights_warn", `fetchWalletPositionHistory ${address.slice(0, 8)}: ${err.message}`);
   }
 
-  const filtered = positions.filter((p) => {
+  let filtered = positions.filter((p) => {
     if (p.status === "open" && !includeOpen) return false;
     if (p.status === "closed" && !includeClosed) return false;
     return true;
   });
+  if (config.screening.requireSolPair) {
+    filtered = filtered.filter((p) => isSolPair(p.token_pair));
+  }
 
   const enrichedPositions = enrichWithMeteora(address, filtered);
   const lifetime = tokenLifetime(enrichedPositions);
@@ -165,7 +186,9 @@ export async function buildWalletInsight(address, { includeOpen = true, includeC
       preferred_range_style: wallet.preferred_range_style,
       tags: wallet.tags ? JSON.parse(wallet.tags) : [],
       realized_pnl_meteora: meteoraTotal?.totalPnlUsd ?? null,
-      total_closed_positions_meteora: meteoraTotal?.totalClosedPositions ?? null,
+      total_closed_positions_meteora: config.screening.requireSolPair
+        ? meteoraPositions.filter((p) => p.isClosed).length
+        : (meteoraTotal?.totalClosedPositions ?? null),
       position_stats: stats,
     },
     token_lifetime: lifetime,

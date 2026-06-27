@@ -10,6 +10,22 @@ import { deriveWalletExtras } from "../wallets/tag-computer.js";
 
 const num = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
 
+const SOL_MINT = "So11111111111111111111111111111111111111112";
+const SOL_SYMBOLS = new Set(["sol", "wsol"]);
+
+function isSolToken(token) {
+  if (!token) return false;
+  const mint = String(token?.address || "").toLowerCase();
+  const symbol = String(token?.symbol || "").toLowerCase();
+  return mint === SOL_MINT.toLowerCase() || SOL_SYMBOLS.has(symbol);
+}
+
+function isSolPair(tokenPair) {
+  if (!tokenPair) return false;
+  const parts = String(tokenPair).toLowerCase().split("/");
+  return parts.some((p) => SOL_SYMBOLS.has(p.trim()));
+}
+
 // Cap breadth pools per wallet (portfolio/open footprint) to bound LPAgent cost.
 const MAX_BREADTH_POOLS = 6;
 
@@ -43,17 +59,26 @@ export function applyEvaluation(address, aggregate, positions = []) {
     ? stats.won / closedDecided
     : (aggregate && num(aggregate.win_rate_pct) > 0 ? num(aggregate.win_rate_pct) / 100 : 0);
 
-  // total_positions: prefer aggregate totalLp (full count in pool); fall back to DB count.
-  const totalPositions = num(aggregate?.total_positions, stats.total) || stats.total;
+  // total_positions: when requireSolPair is on, only count SOL-pair positions.
+  const totalPositions = config.screening.requireSolPair
+    ? stats.total
+    : (num(aggregate?.total_positions, stats.total) || stats.total);
 
   const metrics = {
     total_positions: totalPositions,
     win_count: stats.won,
     loss_count: stats.lost,
     win_rate: winRate,
-    total_pnl_usd: num(aggregate?.total_pnl_usd, stats.total_pnl_usd),
-    total_fees_usd: num(aggregate?.total_fees_usd, stats.total_fees_usd),
-    avg_fee_yield: num(aggregate?.fee_percent, stats.avg_fee_yield),
+    // When filtering to SOL pairs, prefer DB-derived aggregates from positionStats.
+    total_pnl_usd: config.screening.requireSolPair
+      ? stats.total_pnl_usd
+      : num(aggregate?.total_pnl_usd, stats.total_pnl_usd),
+    total_fees_usd: config.screening.requireSolPair
+      ? stats.total_fees_usd
+      : num(aggregate?.total_fees_usd, stats.total_fees_usd),
+    avg_fee_yield: config.screening.requireSolPair
+      ? stats.avg_fee_yield
+      : num(aggregate?.fee_percent, stats.avg_fee_yield),
     avg_duration_hours: num(aggregate?.avg_age_hours, stats.avg_duration_hours),
   };
 
@@ -217,6 +242,11 @@ export async function evaluateWallet(address) {
     log("eval_warn", `portfolio/open ${address?.slice(0, 8)} failed: ${err.message}`);
   }
 
+  // 2b) When requireSolPair is enabled, drop non-SOL pools from the open portfolio.
+  if (config.screening.requireSolPair) {
+    portfolio.pools = portfolio.pools.filter((p) => isSolPair(`${p.tokenXSymbol}/${p.tokenYSymbol}`));
+  }
+
   // 3) Meteora position PnL history — independent, rich, covers all closed positions.
   let meteoraPositions = [];
   let meteoraTotalClosed = 0;
@@ -226,7 +256,9 @@ export async function evaluateWallet(address) {
       daysBack: config.discovery.evaluationBackfillDays,
       pageSize: 100,
     });
-    meteoraPositions = history.positions.map((p) => ({ ...positionFromMeteora(p), wallet_address: address }));
+    meteoraPositions = history.positions
+      .map((p) => ({ ...positionFromMeteora(p), wallet_address: address }))
+      .filter((p) => !config.screening.requireSolPair || isSolPair(p.token_pair));
     meteoraTotalClosed = history.totalClosedPositions;
     log("eval", `meteora history ${address.slice(0, 8)}…: ${meteoraPositions.length} positions, ${meteoraTotalClosed} closed`);
   } catch (err) {
@@ -273,7 +305,10 @@ export async function evaluateWallet(address) {
   const positionMap = new Map(allPositions.map((p) => [p.id, p]));
   for (const p of meteoraPositions) positionMap.set(p.id, p);
   for (const p of histPositions) if (!positionMap.has(p.id)) positionMap.set(p.id, p);
-  const mergedPositions = [...positionMap.values()];
+  let mergedPositions = [...positionMap.values()];
+  if (config.screening.requireSolPair) {
+    mergedPositions = mergedPositions.filter((p) => isSolPair(p.token_pair));
+  }
 
   // Open win-rate: fraction of the wallet's pools that are NET positive (fees earned > IL).
   const netOf = (p) => p.pnl + p.unclaimedFees;

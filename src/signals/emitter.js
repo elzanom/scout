@@ -37,6 +37,8 @@ export async function emitSignal({ wallet, pool, confidence, reasons, suggested,
     pool: pool.pool,
     token_pair: tokenPair,
     confidence: Number(confidence.toFixed(3)),
+    wallet_score: wallet.score,
+    pool_score: pool.pool_score,
     trigger: {
       type: "wallet_entry",
       wallet: wallet.address,

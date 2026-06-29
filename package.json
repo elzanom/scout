@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@solana/web3.js": "^1.95.0",
+    "archiver": "^8.0.0",
     "better-sqlite3": "^12.11.1",
     "bn.js": "^5.2.1",
     "bs58": "^5.0.0",

@@ -74,7 +74,7 @@ export async function withRetry(fn, opts = {}) {
 }
 
 /**
- * Helius / LPAgent-aware retry. On HTTP 429 — or the LPAgent rate-limit message
+ * Helius / Agent Meridian-aware retry. On HTTP 429 — or the Agent Meridian rate-limit message
  * ("Rate limit exceeded. Please wait 60 seconds …") — it tags the error with
  * `retryAfter = 60` so the underlying `withRetry` backs off at least 60 seconds,
  * matching meridian's behavior (tools/study.js).

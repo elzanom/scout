@@ -1,5 +1,5 @@
 import { log } from "../utils/logger.js";
-import { fetchPoolByAddress, getSolPriceUsd, fetchBirdeyeTradeFlow } from "../screener/metrics-fetcher.js";
+import { fetchPoolByAddress, getSolPriceUsd, fetchTradeFlow } from "../screener/metrics-fetcher.js";
 import { insertSnapshot, getLatestSnapshot } from "../db/market-snapshots.js";
 import { broadcastSnapshot } from "../webui/ws-broadcaster.js";
 
@@ -33,11 +33,12 @@ export async function collectPoolSnapshot(poolAddress) {
   const solPrice = await getSolPriceUsd();
   const baseMint = base.address || null;
 
-  // Parallel secondary fetches: 1h Meteora timeframe (freshly-hot vs long-hot) + Birdeye trade
-  // flow (sell-pressure signal). Both null-safe; snapshot still succeeds if either fails.
+  // Parallel secondary fetches: 1h Meteora timeframe (freshly-hot vs long-hot) + trade
+  // flow (sell-pressure signal). Birdeye first, GMGN fallback. Both null-safe; snapshot still
+  // succeeds if either fails.
   const [raw1h, tradeFlow] = await Promise.all([
     fetchPoolByAddress(poolAddress, "1h").catch(() => null),
-    baseMint ? fetchBirdeyeTradeFlow(baseMint).catch(() => null) : Promise.resolve(null),
+    baseMint ? fetchTradeFlow(baseMint).catch(() => null) : Promise.resolve(null),
   ]);
   const buyUsd = num(tradeFlow?.vBuy24hUSD);
   const sellUsd = num(tradeFlow?.vSell24hUSD);
@@ -113,7 +114,7 @@ export async function collectPoolSnapshot(poolAddress) {
     // multi-source enrichment
     base_mint: baseMint,
     sol_price_usd: solPrice,
-    // buy/sell flow (Birdeye)
+    // buy/sell flow (Birdeye → GMGN fallback)
     buy_volume_24h_usd: buyUsd,
     sell_volume_24h_usd: sellUsd,
     buy_count_24h: num(tradeFlow?.buy24h),

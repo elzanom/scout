@@ -9,6 +9,12 @@ import { getAndClearStagedSignals } from "../signals/stage-signals.js";
  * snapshot at export time (dataset/exporter.js) — so every new snapshot metric auto-becomes a
  * training feature without changing this record.
  */
+const DARWINIAN_SIGNALS = [
+  "organic_score", "fee_tvl_ratio", "volume", "mcap", "holder_count",
+  "smart_wallets_present", "narrative_quality", "study_win_rate", "hive_consensus",
+  "volatility", "entry_mcap", "entry_tvl", "entry_volume",
+];
+
 const COLUMNS = [
   "position_id", "wallet_address", "pool_address",
   // LABEL (what Laminar learns)
@@ -19,7 +25,8 @@ const COLUMNS = [
   "wallet_discovery_source", "wallet_preferred_strategy", "wallet_preferred_range_style",
   // link to the entry-time market snapshot (rich feature vector joined at export)
   "entry_snapshot_id",
-  // Darwinian signal snapshot staged at screening time
+  // Darwinian signal snapshot staged at screening time (flattened + JSON)
+  ...DARWINIAN_SIGNALS.map((s) => `sig_${s}`),
   "signal_snapshot",
 ];
 
@@ -39,6 +46,7 @@ export function buildRecord(positionId) {
   const wallet = getDb().prepare(`SELECT score, win_rate, source, preferred_strategy, preferred_range_style FROM wallets WHERE address = ?`).get(pos.wallet_address) || {};
   const snap = pos.entry_timestamp ? getNearestSnapshot(pos.pool_address, pos.entry_timestamp) : null;
   const entryDate = pos.entry_timestamp ? new Date(pos.entry_timestamp * 1000) : null;
+  const stagedSignals = getAndClearStagedSignals(pos.pool_address, snap?.base_mint) || {};
 
   const record = {
     position_id: pos.id,
@@ -62,8 +70,15 @@ export function buildRecord(positionId) {
     wallet_preferred_strategy: wallet.preferred_strategy ?? null,
     wallet_preferred_range_style: wallet.preferred_range_style ?? null,
     entry_snapshot_id: snap?.id ?? null,
-    signal_snapshot: JSON.stringify(getAndClearStagedSignals(pos.pool_address, snap?.base_mint) || {}),
+    signal_snapshot: JSON.stringify(stagedSignals),
   };
+
+  // Flatten Darwinian signals into prefixed columns for easy SQL/CSV analysis.
+  for (const s of DARWINIAN_SIGNALS) {
+    let v = stagedSignals[s];
+    if (s === "smart_wallets_present") v = v ? 1 : (v === false ? 0 : null);
+    record[`sig_${s}`] = v ?? null;
+  }
 
   const placeholders = COLUMNS.map(() => "?").join(", ");
   getDb().prepare(`INSERT INTO training_records (${COLUMNS.join(", ")}) VALUES (${placeholders})`)

@@ -61,7 +61,7 @@ const TAG_RULES = [
     test: ({ total_fees_usd, total_positions }) => total_fees_usd / Math.max(1, total_positions) >= 200,
   },
 
-  // ── Range style (derived from positions; LPAgent preferred_range_style is kept
+  // ── Range style (derived from positions; Agent Meridian preferred_range_style is kept
   //    separately in `wallets.preferred_range_style`).
   {
     key: "TIGHT-RANGE",

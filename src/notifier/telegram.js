@@ -221,6 +221,89 @@ export async function notifyError(context, error) {
   ]);
 }
 
+/** Discovery report: pools that passed screening and were studied. */
+export async function notifyPools({ pass, studied, newCandidates, errors = [] }) {
+  if (!isEnabled()) return null;
+  const poolsText = Array.isArray(pass) && pass.length
+    ? pass.slice(0, 10).map((p) => `• ${escapeHtml(p.name || p.pool || "unknown")} — TVL $${Number(p.tvl || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`).join("\n")
+    : "No pools passed screening.";
+  const html =
+    `🏊 <b>Pool Discovery Report</b>\n\n` +
+    `Passed screening: <b>${pass?.length ?? 0}</b>\n` +
+    `Studied: <b>${studied ?? 0}</b> pool(s)\n` +
+    `New candidates: <b>${newCandidates ?? 0}</b> wallet(s)\n\n` +
+    `Top pools:\n${poolsText}`;
+  return sendHTML(html);
+}
+
+/** Wallet discovery report: newly found candidate wallets. */
+export async function notifyWallets({ newWallets = [], source = "pool_discovery" }) {
+  if (!isEnabled() || !newWallets.length) return null;
+  const list = newWallets.slice(0, 15).map((w) => `• <code>${escapeHtml(w)}</code>`).join("\n");
+  const html =
+    `👛 <b>Wallet Discovery Report</b> — <i>${escapeHtml(source)}</i>\n\n` +
+    `New candidates: <b>${newWallets.length}</b>\n\n` +
+    list +
+    (newWallets.length > 15 ? `\n<i>...and ${newWallets.length - 15} more</i>` : "");
+  return sendHTML(html);
+}
+
+/** Wallet performance report: evaluation outcomes. */
+export async function notifyPerformance({ summary = {}, details = [], pool, name } = {}) {
+  if (!isEnabled() || !details.length) return null;
+  const poolLine = pool ? `Pool: <b>${escapeHtml(name || pool.slice(0, 12))}</b>\n` : "";
+  const statuses = Object.keys(summary).length
+    ? Object.entries(summary).map(([k, v]) => `${escapeHtml(k)}: <b>${v}</b>`).join(" | ") + "\n\n"
+    : "";
+  const list = details.slice(0, 15).map((d) => {
+    const emoji = d.status === "tracked" ? "🟢" : d.status === "top" ? "🏆" : d.status === "rejected" ? "🔴" : d.status === "error" ? "⚠️" : "⚪";
+    const perf = d.status === "error"
+      ? `error: ${escapeHtml(d.error || "unknown")}`
+      : `score ${d.score ?? "?"}, wr ${d.win_rate != null ? (d.win_rate * 100).toFixed(0) + "%" : "?"}, pos ${d.positions ?? "?"}, fee ${d.fee_yield != null ? Number(d.fee_yield).toFixed(1) : "?"}`;
+    return `${emoji} <code>${escapeHtml(d.address?.slice(0, 12) || "unknown")}…</code> — ${perf}`;
+  }).join("\n");
+  const html =
+    `📊 <b>Wallet Performance Report</b>\n\n` +
+    poolLine +
+    statuses +
+    `${list}` +
+    (details.length > 15 ? `\n<i>...and ${details.length - 15} more</i>` : "");
+  return sendHTML(html);
+}
+
+/** Per-pool report: pool passed screening + study result. */
+export async function notifyPoolStudy({ pool, name, tvl, volume, feeApr, owners, newWallets, errors }) {
+  if (!isEnabled()) return null;
+  const tvlStr = tvl != null ? `$${Number(tvl).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "?";
+  const volStr = volume != null ? `$${Number(volume).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "?";
+  const feeStr = feeApr != null ? `${(feeApr * 100).toFixed(1)}%` : "?";
+  const newList = newWallets?.length
+    ? newWallets.slice(0, 10).map((w) => `• <code>${escapeHtml(w)}</code>`).join("\n")
+    : "<i>No new wallets</i>";
+  const errorText = errors?.length ? `\n⚠️ Errors: ${escapeHtml(errors.join("; ").slice(0, 200))}` : "";
+  const html =
+    `🏊 <b>Pool Study</b>\n\n` +
+    `Pool: <b>${escapeHtml(name || pool?.slice(0, 12) || "unknown")}</b>\n` +
+    `TVL: ${tvlStr} | Vol: ${volStr} | Fee APR: ${feeStr}\n` +
+    `Top LPers studied: <b>${owners ?? 0}</b>\n` +
+    `New wallets: <b>${newWallets?.length ?? 0}</b>\n\n` +
+    `${newList}` +
+    errorText;
+  return sendHTML(html);
+}
+
+/** Per-pool wallet discovery report (lightweight companion to notifyPoolStudy). */
+export async function notifyPoolWalletDiscovery({ pool, name, newWallets }) {
+  if (!isEnabled() || !newWallets?.length) return null;
+  const list = newWallets.slice(0, 15).map((w) => `• <code>${escapeHtml(w)}</code>`).join("\n");
+  const html =
+    `👛 <b>New Wallets from Pool</b> — ${escapeHtml(name || pool?.slice(0, 12) || "unknown")}\n\n` +
+    `Count: <b>${newWallets.length}</b>\n\n` +
+    list +
+    (newWallets.length > 15 ? `\n<i>...and ${newWallets.length - 15} more</i>` : "");
+  return sendHTML(html);
+}
+
 function escapeHtml(text) {
   return String(text)
     .replace(/&/g, "&amp;")

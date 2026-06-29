@@ -1,31 +1,24 @@
-import { config } from "../../config/config.js";
 import { log } from "../utils/logger.js";
-import { withHeliusRetry, sleep } from "../utils/retry.js";
+import { sleep } from "../utils/retry.js";
 import { parseActivityEvent } from "./tx-parser.js";
-
-const HELIUS_BASE = "https://api.helius.xyz";
+import { heliusApiGet } from "../rpc/helius-router.js";
 
 /**
  * Fetch one page of a wallet's enhanced transaction history from Helius.
  * Uses the deprecated Enhanced Transactions `/v0/addresses/{addr}/transactions` endpoint,
  * which still operates and returns rich, instruction-bearing TX objects. `before` paginates
  * to older signatures. Migration to getTransactionsForAddress is low-priority future work.
+ *
+ * This stays on the premium Helius API; the public pump.helius-rpc.com proxy cannot serve
+ * enhanced transaction history.
+ *
+ * The underlying router rotates through multiple HELIUS_API_KEYs when configured, failing
+ * over automatically on rate-limit or transient errors.
  */
 function fetchPage(wallet, { before, limit }) {
-  const key = config.env.heliusApiKey;
-  if (!key) throw new Error("HELIUS_API_KEY not configured — cannot backfill");
-  let url = `${HELIUS_BASE}/v0/addresses/${wallet}/transactions?api-key=${encodeURIComponent(key)}&limit=${limit}`;
-  if (before) url += `&before=${encodeURIComponent(before)}`;
-  return withHeliusRetry(async () => {
-    const res = await fetch(url);
-    if (!res.ok) {
-      const e = new Error(`Helius history ${res.status} ${res.statusText}`);
-      e.status = res.status;
-      e.retryAfter = res.headers.get("retry-after");
-      throw e;
-    }
-    return res.json();
-  });
+  const query = { limit };
+  if (before) query.before = before;
+  return heliusApiGet(`/v0/addresses/${wallet}/transactions`, query, { maxAttempts: 5 });
 }
 
 /**

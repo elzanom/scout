@@ -11,6 +11,9 @@ import {
 import { scoreCandidate, degenScore, poolScore01 } from "./pool-scorer.js";
 import { loadWeights } from "../signals/weights.js";
 import { stageSignals } from "../signals/stage-signals.js";
+import { getTokenInfo } from "../db/token-info.js";
+import { getLatestSnapshot } from "../db/market-snapshots.js";
+import { getDb } from "../db/index.js";
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 function includesCaseInsensitive(values, value) {
@@ -31,6 +34,31 @@ function isSolToken(token) {
 
 function isSolPair(pool) {
   return isSolToken(pool?.token_x) || isSolToken(pool?.token_y);
+}
+
+/** Whether any currently-ranked top wallet has an open position in this pool. */
+function isTopWalletInPool(poolAddress) {
+  try {
+    const row = getDb().prepare(`
+      SELECT 1 FROM positions p
+      JOIN wallets w ON w.address = p.wallet_address
+      WHERE p.pool_address = ? AND p.status = 'open' AND w.is_top_wallet = 1
+      LIMIT 1
+    `).get(poolAddress);
+    return !!row;
+  } catch {
+    return false;
+  }
+}
+
+/** Best-effort narrative quality from cached token info (Laminar uses present/absent). */
+function inferNarrativeQuality(tokenInfo) {
+  if (!tokenInfo) return "absent";
+  const tags = (() => {
+    try { return JSON.parse(tokenInfo.tags || "[]"); } catch { return []; }
+  })();
+  const hasNarrative = Array.isArray(tags) && tags.length > 0;
+  return hasNarrative ? "present" : "absent";
 }
 
 function getPoolLaunchpad(pool) {
@@ -215,20 +243,28 @@ function condensePool(p) {
   condensed.pool_score = poolScore01(condensed);
 
   // Stage Darwinian signal snapshot for later weight learning.
+  // Mirrors Laminar signal-weights.js: 13 signals at entry time.
+  const snap = getLatestSnapshot(condensed.pool);
+  const tokenInfo = snap?.base_mint ? getTokenInfo(snap.base_mint) : null;
   stageSignals(condensed.pool, {
+    base_mint: condensed.base?.mint,
     organic_score: condensed.organic_score,
     fee_tvl_ratio: condensed.fee_active_tvl_ratio,
     volume: condensed.volume_window,
     mcap: condensed.mcap,
     holder_count: condensed.holders,
-    smart_wallets_present: 0, // scout does not currently track smart-wallet presence in screening
-    narrative_quality: null,
-    study_win_rate: null,
+    smart_wallets_present: isTopWalletInPool(condensed.pool),
+    narrative_quality: inferNarrativeQuality(tokenInfo),
+    study_win_rate: null, // filled by wallet-evaluator per-position if known
+    hive_consensus: null, // reserved for future HiveMind sync; Laminar compatibility
     volatility: condensed.volatility,
     entry_mcap: condensed.mcap,
     entry_tvl: condensed.tvl,
     entry_volume: condensed.volume_window,
-    base_mint: condensed.base?.mint,
+    entry_holders: condensed.holders,
+    momentum_score: condensed.degen_score ?? null,
+    price_change_pct: condensed.price_change_pct ?? null,
+    volume_change_pct: condensed.volume_change_pct ?? null,
   });
 
   return condensed;

@@ -10,9 +10,9 @@ signals-output.json
 .claude/
 laminar-vps-snapshot/
 viper-vps-snapshot/
-data/
-output/
-dataset/
+/data/
+/output/
+/dataset/
 logs/*.log
 logs/*.jsonl
 dataset/*.csv

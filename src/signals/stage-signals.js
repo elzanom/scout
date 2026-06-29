@@ -56,6 +56,32 @@ export function getAndClearStagedSignals(poolAddress, baseMint = null) {
   return signals;
 }
 
+/** Peek staged signals without clearing (for enrichment, e.g. study_win_rate). */
+export function getStagedSignals(poolAddress, baseMint = null) {
+  cleanupStale();
+  let poolKey = normalizeKey(poolAddress);
+  let data = poolKey ? _staged.get(poolKey) : null;
+  if (!data && baseMint) {
+    const baseKey = normalizeKey(baseMint);
+    poolKey = baseKey ? _stagedByBaseMint.get(baseKey) : null;
+    data = poolKey ? _staged.get(poolKey) : null;
+  }
+  if (!data) return null;
+  const { staged_at, ...signals } = data;
+  return signals;
+}
+
+/** Enrich an existing staged signal snapshot in place (used by wallet-evaluator). */
+export function patchStagedSignals(poolAddress, patch) {
+  cleanupStale();
+  const poolKey = normalizeKey(poolAddress);
+  if (!poolKey) return false;
+  const data = _staged.get(poolKey);
+  if (!data) return false;
+  Object.assign(data, patch);
+  return true;
+}
+
 export function getStagedPools() {
   cleanupStale();
   return [..._staged.keys()];

@@ -137,6 +137,7 @@ CREATE TABLE IF NOT EXISTS token_info (
   dev TEXT,                          -- deployer address
   circ_supply REAL,
   total_supply REAL,
+  price_usd REAL,                    -- best-effort spot price from token_info source
   audit TEXT,                        -- JSON of audit flags
   tags TEXT,
   bundler_rate REAL,                 -- GMGN risk
@@ -182,6 +183,21 @@ CREATE TABLE IF NOT EXISTS training_records (
   hour_of_day INTEGER,
   day_of_week INTEGER,
   wallet_discovery_source TEXT,
+  -- Darwinian signal snapshot (mirrors Laminar signal-weights.js)
+  sig_organic_score REAL,
+  sig_fee_tvl_ratio REAL,
+  sig_volume REAL,
+  sig_mcap REAL,
+  sig_holder_count REAL,
+  sig_smart_wallets_present INTEGER,
+  sig_narrative_quality TEXT,
+  sig_study_win_rate REAL,
+  sig_hive_consensus REAL,
+  sig_volatility REAL,
+  sig_entry_mcap REAL,
+  sig_entry_tvl REAL,
+  sig_entry_volume REAL,
+  signal_snapshot TEXT,
   created_at INTEGER DEFAULT (unixepoch()),
   FOREIGN KEY (position_id) REFERENCES positions(id)
 );
@@ -257,7 +273,7 @@ const TRAINING_COLS = [
   ["signal_snapshot", "TEXT"], // JSON of staged Darwinian signals at entry
 ];
 const WALLETS_COLS = [
-  ["preferred_strategy", "TEXT"], ["preferred_range_style", "TEXT"], // from LPAgent studyTopLPers
+  ["preferred_strategy", "TEXT"], ["preferred_range_style", "TEXT"], // from Agent Meridian studyTopLPers
   ["tags", "TEXT"], // JSON array of computed tags
   ["open_positions", "INTEGER"], // count of currently open positions
   ["pool_count", "INTEGER"], // distinct pools ever LPed
@@ -265,6 +281,11 @@ const WALLETS_COLS = [
 ];
 const TOKEN_INFO_COLS = [
   ["creator_holding_pct", "REAL"], // GMGN dev.creator_token_balance / total_supply
+  ["price_usd", "REAL"],           // best-effort spot price from token_info source
+];
+const POSITIONS_COLS = [
+  ["token_x_mint", "TEXT"], // base token mint (for readable pair formatting)
+  ["token_y_mint", "TEXT"], // quote token mint (usually SOL or USDC)
 ];
 
 function addColumn(db, table, col, type) {
@@ -281,6 +302,7 @@ export function runMigrations(db) {
   for (const [col, type] of TRAINING_COLS) addColumn(db, "training_records", col, type);
   for (const [col, type] of WALLETS_COLS) addColumn(db, "wallets", col, type);
   for (const [col, type] of TOKEN_INFO_COLS) addColumn(db, "token_info", col, type);
+  for (const [col, type] of POSITIONS_COLS) addColumn(db, "positions", col, type);
   try {
     db.exec("CREATE INDEX IF NOT EXISTS idx_training_records_snapshot ON training_records(entry_snapshot_id)");
   } catch { /* index may pre-exist */ }

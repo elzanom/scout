@@ -6,7 +6,7 @@ const now = () => Math.floor(Date.now() / 1000);
  * Insert a wallet as 'candidate' if it is new (preserving nothing to overwrite),
  * then touch last_active regardless. Returns the row and whether it was newly created.
  */
-export function upsertWallet({ address, source = "manual", discovered_from = null, alias = null }) {
+export function upsertWallet({ address, source = "manual", discovered_from = null, source_detail = null, alias = null }) {
   const db = getDb();
   const ts = now();
   const info = db.prepare(
@@ -99,7 +99,7 @@ export function bumpEvaluation(address) {
   ).run(now(), now(), address);
 }
 
-/** Persist LPAgent-derived LP strategy tags (preferred strategy + range style). */
+/** Persist Agent Meridian-derived LP strategy tags (preferred strategy + range style). */
 export function updateWalletStrategy(address, { preferred_strategy, preferred_range_style }) {
   getDb().prepare(
     `UPDATE wallets SET preferred_strategy = ?, preferred_range_style = ?, updated_at = ? WHERE address = ?`,

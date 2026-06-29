@@ -3,13 +3,12 @@ import { log } from "../utils/logger.js";
 import { withRetry } from "../utils/retry.js";
 import { config } from "../../config/config.js";
 import { upsertTokenInfo } from "../db/token-info.js";
+import { fetchTokenInfo, numeric } from "../screener/metrics-fetcher.js";
 
 const JUP_DATAPI = "https://datapi.jup.ag/v1";
-const BIRDEYE = "https://public-api.birdeye.so/defi";
 const GMGN = "https://openapi.gmgn.ai";
 
 // Disable keyed sources after persistent auth failure (until restart) to avoid 401 spam.
-let birdeyeOk = true;
 let gmgnOk = !!process.env.GMGN_API_KEY;
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
@@ -27,22 +26,6 @@ async function fetchJupiter(mint) {
     const arr = Array.isArray(data) ? data : [data];
     return arr.find((a) => a?.id === mint) || arr[0] || null;
   });
-}
-
-/** Birdeye (gated by BIRDEYE_API_KEY) — token overview + security. Null if no/invalid key. */
-async function fetchBirdeye(mint) {
-  if (!birdeyeOk || !config.env.birdeyeApiKey) return null;
-  try {
-    return await withRetry(async () => {
-      const res = await fetch(`${BIRDEYE}/token_overview?address=${mint}&chain=solana`, {
-        headers: { "x-api-key": config.env.birdeyeApiKey },
-      });
-      if (res.status === 401) { birdeyeOk = false; log("tokeninfo_warn", "Birdeye 401 — key invalid, disabling for this run"); return null; }
-      if (!res.ok) { const e = new Error(`birdeye ${res.status}`); e.status = res.status; throw e; }
-      const d = await res.json();
-      return d?.data || d || null;
-    });
-  } catch (e) { log("tokeninfo_warn", `Birdeye ${mint.slice(0, 8)}: ${e.message}`); return null; }
 }
 
 /**
@@ -71,13 +54,32 @@ async function fetchGmgn(mint) {
   } catch (e) { log("tokeninfo_warn", `GMGN ${mint.slice(0, 8)}: ${e.message}`); return null; }
 }
 
+function dexPairToMarket(pair) {
+  if (!pair) return {};
+  const base = pair.baseToken;
+  const vol = pair.volume || {};
+  const liquidity = pair.liquidity || {};
+  const priceUsd = numeric(pair.priceUsd);
+  return {
+    symbol: base?.symbol || pair.symbol || null,
+    mcap: numeric(pair.marketCap) ?? numeric(pair.fdv),
+    fdv: numeric(pair.fdv) ?? numeric(pair.marketCap),
+    price_usd: priceUsd,
+    total_supply: priceUsd && numeric(pair.fdv) ? numeric(pair.fdv) / priceUsd : null,
+    circ_supply: null,
+    holder_count: null,
+    volume_24h_usd: numeric(vol.h24),
+  };
+}
+
 /**
- * Enrich token_info for a mint from all available sources (Jupiter always; Birdeye + GMGN when
- * valid keys present). Field sourcing:
+ * Enrich token_info for a mint from all available sources (Jupiter always; Birdeye/GMGN/gmgn-cli/DexScreener
+ * via metrics-fetcher's unified fetchTokenInfo). Field sourcing:
  *   - Birdeye token_overview: market data (mcap, fdv, holder, supplies) — reliable.
  *   - Jupiter: identity + audit (launchpad, organicScore, dev, tags, createdAt).
  *   - GMGN /v1/token/info: launchpad + graduated + dev + wallet_tags_stat + stat.{bundler,
  *     top10, entrapment, sniper, dev_team, fresh, bot_degen} + fee_distribution.is_locked.
+ *   - gmgn-cli / DexScreener: market data fallback when Birdeye/GMGN HTTP unavailable.
  * Risk cols (is_honeypot, renounced_mint, renounced_freeze) stay null without Birdeye premium
  * (the user's plan tier blocks /defi/token_security).
  */
@@ -86,39 +88,83 @@ export async function enrichTokenInfo(mint) {
 
   let j = null;
   try { j = await fetchJupiter(mint); } catch (e) { log("tokeninfo_warn", `jupiter ${mint.slice(0, 8)}: ${e.message}`); }
-  const [b, g] = await Promise.all([fetchBirdeye(mint), fetchGmgn(mint)]);
+
+  // Parallel: keyed GMGN risk/dev data + unified market-data fallback chain.
+  const [g, ti] = await Promise.all([fetchGmgn(mint), fetchTokenInfo(mint)]);
 
   const stat = g?.stat || {};
   const wts = g?.wallet_tags_stat || {};
   const devObj = g?.dev || {};
   const feeDist = g?.fee_distribution?.platform_data || {};
 
+  const source = ti?.source;
+  const m = ti?.data || {};
+
+  // Per-source market field extraction.
+  let symbol = j?.symbol || g?.symbol || null;
+  let fdv = num(j?.fdv);
+  let mcap = num(j?.mcap);
+  let holderCount = num(j?.holderCount);
+  let totalSupply = num(j?.totalSupply);
+  let circSupply = num(j?.circSupply);
+  let priceUsd = null;
+
+  if (source === "birdeye") {
+    symbol = symbol || m?.symbol || null;
+    fdv = fdv ?? num(m?.fdv);
+    mcap = mcap ?? num(m?.marketCap);
+    holderCount = holderCount ?? num(m?.holder);
+    totalSupply = totalSupply ?? num(m?.totalSupply);
+    circSupply = circSupply ?? num(m?.circulatingSupply);
+    priceUsd = numeric(m?.price);
+  } else if (source === "gmgn" || source === "gmgn-cli") {
+    const market = m || {};
+    symbol = symbol || market?.symbol || null;
+    fdv = fdv ?? num(market?.fdv);
+    mcap = mcap ?? num(market?.mcap);
+    holderCount = holderCount ?? num(market?.holder_count) ?? num(market?.holderCount);
+    totalSupply = totalSupply ?? num(market?.total_supply);
+    circSupply = circSupply ?? num(market?.circulating_supply);
+    priceUsd = numeric(market?.price);
+  } else if (source === "dexscreener") {
+    const market = dexPairToMarket(m);
+    symbol = symbol || market?.symbol || null;
+    fdv = fdv ?? market?.fdv;
+    mcap = mcap ?? market?.mcap;
+    totalSupply = totalSupply ?? market?.total_supply;
+    priceUsd = market?.price_usd;
+  }
+
   // Creator concentration: dev.creator_token_balance / total_supply (best-effort proxy for top1
   // holder when creator still holds; 0 when sold/closed). null when GMGN data insufficient.
   const creatorBal = num(devObj.creator_token_balance);
-  const totalSupGmgn = num(g?.total_supply);
-  const creatorHoldingPct = creatorBal != null && totalSupGmgn != null && totalSupGmgn > 0
-    ? creatorBal / totalSupGmgn
+  const creatorHoldingPct = creatorBal != null && totalSupply != null && totalSupply > 0
+    ? creatorBal / totalSupply
     : null;
 
   // GMGN uses "migrated" for pump.fun bonding-curve graduation (launchpad_status field).
   const gmgnGraduated = g?.launchpad_status === "migrated" ? 1 : null;
 
+  const sources = ["jupiter"];
+  if (source) sources.push(source);
+  if (g) sources.push("gmgn-risk");
+
   const info = {
     mint,
-    symbol: j?.symbol || g?.symbol || b?.symbol || null,
+    symbol,
     launchpad: j?.launchpad || g?.launchpad || g?.launchpad_platform || null,
     graduated: gmgnGraduated ?? (j?.graduatedPool || j?.graduatedAt ? 1 : null),
     graduated_at: toUnixSec(g?.migrated_timestamp) ?? toUnixSec(j?.graduatedAt),
-    holder_count: num(stat.holder_count) ?? num(g?.holder_count) ?? num(j?.holderCount) ?? num(b?.holder) ?? null,
+    holder_count: holderCount,
     organic_score: num(j?.organicScore) ?? null,
     is_verified: j?.isVerified ? 1 : null,
     created_at: toUnixSec(g?.creation_timestamp) ?? toUnixSec(g?.open_timestamp) ?? toUnixSec(j?.createdAt),
-    fdv: num(j?.fdv) ?? num(g?.fdv) ?? num(b?.fdv) ?? null,
-    mcap: num(j?.mcap) ?? num(g?.mcap) ?? num(b?.marketCap) ?? null,
+    fdv,
+    mcap,
     dev: devObj.creator_address || j?.dev || null,
-    circ_supply: num(j?.circSupply) ?? num(g?.circulating_supply) ?? num(b?.circulatingSupply) ?? null,
-    total_supply: num(j?.totalSupply) ?? num(g?.total_supply) ?? num(b?.totalSupply) ?? null,
+    circ_supply: circSupply,
+    total_supply: totalSupply,
+    price_usd: priceUsd,
     audit: JSON.stringify({
       ...(j?.audit || {}),
       gmgn_stat: {
@@ -132,17 +178,18 @@ export async function enrichTokenInfo(mint) {
         locked_ratio: g?.locked_ratio,
       },
       fee_locked: feeDist.is_locked,
+      token_info_source: source,
     }),
     tags: JSON.stringify(wts),  // bundler_wallets, sniper_wallets, smart_wallets, renowned_wallets, ...
     // Risk metrics — from GMGN `stat` (percentages as strings, num() coerces):
     bundler_rate: num(stat.top_bundler_trader_percentage),
-    is_honeypot: null,  // not exposed in GMGN /v1/token/info; needs Birdeye premium tier
+    is_honeypot: null,  // not exposed in GMGN /v1/token.info; needs Birdeye premium tier
     rug_ratio: num(stat.top_entrapment_trader_percentage),  // proxy: % of top entrapment traders
     top10_holder_rate: num(stat.top_10_holder_rate),
     renounced_mint: null,  // not exposed here; needs Birdeye premium tier
     renounced_freeze: feeDist.is_locked != null ? (feeDist.is_locked ? 1 : 0) : null,  // best-effort: fee authority locked
     creator_holding_pct: creatorHoldingPct,
-    source: ["jupiter", b && "birdeye", g && "gmgn"].filter(Boolean).join("+"),
+    source: sources.filter(Boolean).join("+"),
     fetched_at: Math.floor(Date.now() / 1000),
   };
 
@@ -152,5 +199,11 @@ export async function enrichTokenInfo(mint) {
 
 /** Whether the keyed sources are currently active (for logging). */
 export function sourceStatus() {
-  return { jupiter: true, birdeye: birdeyeOk && !!config.env.birdeyeApiKey, gmgn: gmgnOk };
+  return {
+    jupiter: true,
+    birdeye: !!config.env.birdeyeApiKey,
+    gmgn: gmgnOk,
+    gmgn_cli: !process.env.GMGN_API_KEY,
+    dexscreener: true,
+  };
 }

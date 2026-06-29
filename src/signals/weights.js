@@ -10,6 +10,7 @@ const SIGNAL_NAMES = [
   "smart_wallets_present",
   "narrative_quality",
   "study_win_rate",
+  "hive_consensus",
   "volatility",
   "entry_mcap",
   "entry_tvl",
@@ -24,6 +25,7 @@ const HIGHER_IS_BETTER = new Set([
   "volume",
   "holder_count",
   "study_win_rate",
+  "hive_consensus",
 ]);
 
 const BOOLEAN_SIGNALS = new Set(["smart_wallets_present"]);

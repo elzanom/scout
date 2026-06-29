@@ -4,7 +4,7 @@ import { withHeliusRetry } from "../utils/retry.js";
 import { discoverPools } from "../screener/pool-screener.js";
 import { upsertWallet, logDiscovery } from "../db/wallets.js";
 
-// LPAgent (Agent Meridian) — public key, no account required. Verified working 2026-06-26.
+// Agent Meridian (public API wrapper around LPAgent analytics). No account required.
 const AGENT_MERIDIAN_API = process.env.AGENT_MERIDIAN_API_URL || "https://api.agentmeridian.xyz/api";
 const AGENT_MERIDIAN_PUBLIC_KEY = process.env.PUBLIC_API_KEY || "bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz";
 
@@ -13,9 +13,18 @@ const CACHE_TTL_MS = 15 * 60 * 1000;       // 15 minutes
 const CIRCUIT_OPEN_MS = 10 * 60 * 1000;    // 10 minutes
 const CIRCUIT_FAILURE_THRESHOLD = 3;       // consecutive failures before opening
 
+// Global rate limiter: max concurrent in-flight requests to Agent Meridian.
+// Their upstream is flaky under burst; keep this low (default 2) with a small
+// delay between dispatches to avoid thundering-herd 500s.
+const AM_MAX_IN_FLIGHT = Math.max(1, Number(process.env.AGENT_MERIDIAN_MAX_IN_FLIGHT) || 2);
+const AM_DISPATCH_DELAY_MS = Math.max(0, Number(process.env.AGENT_MERIDIAN_DISPATCH_DELAY_MS) || 150);
+
 const cache = new Map();
 const failures = new Map();
 const circuitOpenUntil = new Map();
+const hardFailedPools = new Set();         // pools that returned 5xx >= threshold; skipped entirely
+let inFlight = 0;
+const dispatchQueue = [];
 
 /** Cache key for a studyTopLPers call. */
 function cacheKey(pool, limit) {
@@ -41,7 +50,8 @@ function recordFailure(pool, err) {
   if (count >= CIRCUIT_FAILURE_THRESHOLD) {
     const until = Date.now() + CIRCUIT_OPEN_MS;
     circuitOpenUntil.set(pool, until);
-    log("discovery_warn", `LPAgent circuit OPEN for ${pool.slice(0, 8)}… after ${count} failures (${err.message})`);
+    hardFailedPools.add(pool);
+    log("discovery_warn", `Agent Meridian circuit OPEN for ${pool.slice(0, 8)}… after ${count} failures (${err.message})`);
   }
 }
 
@@ -50,23 +60,52 @@ function recordSuccess(pool) {
   failures.delete(pool);
 }
 
-/** GET one LPAgent path with retry; 429 surfaces the 60s message so withHeliusRetry backs off. */
+/** True if this pool is permanently blacklisted from study calls. */
+export function isPoolStudyBlacklisted(pool) {
+  return hardFailedPools.has(pool);
+}
+
+/** Enqueue a thunk through a global concurrency limiter + small dispatch delay. */
+async function limited(fn) {
+  if (inFlight < AM_MAX_IN_FLIGHT) {
+    inFlight += 1;
+    try {
+      await sleep(AM_DISPATCH_DELAY_MS);
+      return await fn();
+    } finally {
+      inFlight -= 1;
+      if (dispatchQueue.length) {
+        const next = dispatchQueue.shift();
+        limited(next.fn).then(next.resolve).catch(next.reject);
+      }
+    }
+  }
+  return new Promise((resolve, reject) => {
+    dispatchQueue.push({ fn, resolve, reject });
+  });
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** GET one Agent Meridian path with retry + global concurrency gate. */
 async function lpGet(path) {
-  return withHeliusRetry(async () => {
+  return limited(() => withHeliusRetry(async () => {
     const res = await fetch(`${AGENT_MERIDIAN_API}${path}`, { headers: { "x-api-key": AGENT_MERIDIAN_PUBLIC_KEY } });
     if (!res.ok) {
       const e = new Error(res.status === 429
         ? "Rate limit exceeded. Please wait 60 seconds before studying this pool again."
-        : `LPAgent ${path} ${res.status}`);
+        : `Agent Meridian ${path} ${res.status}`);
       e.status = res.status;
       e.retryAfter = res.headers.get("retry-after");
       throw e;
     }
     return res.json();
-  });
+  }));
 }
 
-/** Map an LPAgent topPosition into scout's positions-row shape. */
+/** Map an Agent Meridian topPosition into scout's positions-row shape. */
 function mapPosition(p, poolAddress) {
   const entry = p.createdAt ? Math.floor(Date.parse(p.createdAt) / 1000) : null;
   const exit = p.closedAt ? Math.floor(Date.parse(p.closedAt) / 1000) : null;
@@ -75,6 +114,8 @@ function mapPosition(p, poolAddress) {
     wallet_address: p.owner,
     pool_address: poolAddress,
     token_pair: p.pairName,
+    token_x_mint: null,
+    token_y_mint: null,
     entry_timestamp: entry,
     exit_timestamp: exit,
     bin_lower: p.lowerBinId ?? null,
@@ -92,8 +133,8 @@ function mapPosition(p, poolAddress) {
 }
 
 /**
- * Study a pool's top LPers via LPAgent. Returns a scout-shaped owner list, each with an
- * `aggregate` (from /top-lp, covers top-20) and `positions` (from /study-top-lp topPositions,
+ * Study a pool's top LPers via Agent Meridian. Returns a scout-shaped owner list, each with an
+ * `aggregate` (from /top-lp, covers top-20) and `positions` (from /top-lp historicalOwners,
  * covers top-3 historical owners). Ported from meridian tools/study.js.
  *
  * Results are cached for `CACHE_TTL_MS`. A per-pool circuit breaker trips after
@@ -104,6 +145,7 @@ function mapPosition(p, poolAddress) {
  * @returns {Promise<{ pool: string, pool_name: string|null, overview: object, owners: Array }>}
  */
 export async function studyTopLPers({ pool_address, limit = 20, bypassCache = false } = {}) {
+  if (!pool_address) throw new Error("pool_address required");
   const key = cacheKey(pool_address, limit);
   const cached = cache.get(key);
 
@@ -112,25 +154,32 @@ export async function studyTopLPers({ pool_address, limit = 20, bypassCache = fa
     return cached.value;
   }
 
+  if (hardFailedPools.has(pool_address)) {
+    if (cached) {
+      log("discovery_warn", `studyTopLPers ${pool_address.slice(0, 8)}… hard-failed pool, serving stale cache`);
+      return cached.value;
+    }
+    const e = new Error(`Agent Meridian permanently skipped for ${pool_address}`);
+    e.status = 503;
+    throw e;
+  }
+
   if (isCircuitOpen(pool_address)) {
     if (cached) {
       log("discovery_warn", `studyTopLPers ${pool_address.slice(0, 8)}… circuit open, serving stale cache`);
       return cached.value;
     }
-    const e = new Error(`LPAgent circuit open for ${pool_address}`);
+    const e = new Error(`Agent Meridian circuit open for ${pool_address}`);
     e.status = 503;
     throw e;
   }
 
   try {
-    const [poolData, signalData] = await Promise.all([
-      lpGet(`/top-lp/${pool_address}`),
-      lpGet(`/study-top-lp/${pool_address}`),
-    ]);
+    const poolData = await lpGet(`/top-lp/${pool_address}`);
 
     const topLpers = Array.isArray(poolData?.topLpers) ? poolData.topLpers : [];
     const histMap = new Map(
-      (Array.isArray(signalData?.topHistoricalOwners) ? signalData.topHistoricalOwners : [])
+      (Array.isArray(poolData?.historicalOwners) ? poolData.historicalOwners : [])
         .map((o) => [o.owner, o]),
     );
 
@@ -197,6 +246,7 @@ async function studyAndCollect(pools, { ownerLimit, concurrency }, acc) {
   await runConcurrent(pools, concurrency, async (pool) => {
     try {
       const studied = await studyTopLPers({ pool_address: pool.pool, limit: ownerLimit, bypassCache: false });
+      acc.studiedPools.push({ pool: pool.pool, name: pool.name, owners: studied.owners.length });
       acc.studiedOwners += studied.owners.length;
       for (const owner of studied.owners) {
         if (!owner.address) continue;
@@ -208,9 +258,11 @@ async function studyAndCollect(pools, { ownerLimit, concurrency }, acc) {
         if (isNew) {
           logDiscovery({ wallet_address: owner.address, discovery_source: "pool_discovery", source_detail: pool.pool });
           acc.newCandidates++;
+          acc.newWallets.add(owner.address);
         }
       }
     } catch (err) {
+      acc.errors.push({ pool: pool.pool, error: err.message });
       log("discovery_warn", `studyTopLPers ${pool.pool?.slice(0, 8)} failed: ${err.message}`);
     }
   });
@@ -225,8 +277,9 @@ async function studyAndCollect(pools, { ownerLimit, concurrency }, acc) {
  *
  * @param {{ poolLimit?: number, ownerLimit?: number, concurrency?: number }} opts
  */
-export async function runPoolDiscovery({ poolLimit = 10, ownerLimit = 20, concurrency = 3 } = {}) {
-  const acc = { studiedOwners: 0, newCandidates: 0 };
+export async function runPoolDiscovery({ poolLimit = 10, ownerLimit = 20, concurrency = 2 } = {}) {
+  const acc = { studiedOwners: 0, newCandidates: 0, studiedPools: [], newWallets: new Set(), errors: [] };
+  const allPassedPools = [];
 
   const passes = [{ name: "trending", screening: undefined, limit: poolLimit }];
   if (config.discovery.establishedEnabled) {
@@ -246,14 +299,22 @@ export async function runPoolDiscovery({ poolLimit = 10, ownerLimit = 20, concur
     try {
       const r = await discoverPools({ page_size: Math.max(pass.limit, 20), screening: pass.screening });
       pools = r.pools.slice(0, pass.limit);
+      allPassedPools.push(...pools);
     } catch (err) {
       log("discovery_warn", `${pass.name} discoverPools failed: ${err.message}`);
       continue;
     }
     log("discovery", `${pass.name} pass: studying ${pools.length} pool(s)`);
-    await studyAndCollect(pools, { ownerLimit, concurrency }, acc);
+    await studyAndCollect(pools, { ownerLimit, concurrency: Math.min(concurrency, 2) }, acc);
   }
 
   log("discovery", `pool-discovery done: ${acc.newCandidates} new candidate(s) from ${acc.studiedOwners} studied owner(s)`);
-  return { studied_owners: acc.studiedOwners, new_candidates: acc.newCandidates };
+  return {
+    studied_owners: acc.studiedOwners,
+    new_candidates: acc.newCandidates,
+    passed_pools: allPassedPools,
+    studied_pools: acc.studiedPools,
+    new_wallets: [...acc.newWallets],
+    errors: acc.errors,
+  };
 }

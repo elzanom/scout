@@ -1,23 +1,26 @@
 import { getDb } from "./index.js";
 
 /**
- * Upsert a position keyed by its account id (LPAgent `position`). On conflict the outcome
+ * Upsert a position keyed by its account id (Agent Meridian `position`). On conflict the outcome
  * fields are refreshed while created_at is preserved.
  */
 export function upsertPosition(p) {
   getDb().prepare(
     `INSERT INTO positions (
-       id, wallet_address, pool_address, token_pair,
+       id, wallet_address, pool_address, token_pair, token_x_mint, token_y_mint,
        entry_timestamp, bin_lower, bin_upper, bin_range_width, capital_usd,
        exit_timestamp, fees_earned_usd, pnl_usd, pnl_pct, fee_yield,
        duration_hours, is_profitable, status, updated_at
      ) VALUES (
-       @id, @wallet_address, @pool_address, @token_pair,
+       @id, @wallet_address, @pool_address, @token_pair, @token_x_mint, @token_y_mint,
        @entry_timestamp, @bin_lower, @bin_upper, @bin_range_width, @capital_usd,
        @exit_timestamp, @fees_earned_usd, @pnl_usd, @pnl_pct, @fee_yield,
        @duration_hours, @is_profitable, @status, @updated_at
      )
      ON CONFLICT(id) DO UPDATE SET
+       token_pair = excluded.token_pair,
+       token_x_mint = excluded.token_x_mint,
+       token_y_mint = excluded.token_y_mint,
        exit_timestamp = excluded.exit_timestamp,
        fees_earned_usd = excluded.fees_earned_usd,
        pnl_usd = excluded.pnl_usd,
@@ -32,6 +35,8 @@ export function upsertPosition(p) {
     wallet_address: p.wallet_address,
     pool_address: p.pool_address,
     token_pair: p.token_pair ?? null,
+    token_x_mint: p.token_x_mint ?? null,
+    token_y_mint: p.token_y_mint ?? null,
     entry_timestamp: p.entry_timestamp ?? null,
     bin_lower: p.bin_lower ?? null,
     bin_upper: p.bin_upper ?? null,

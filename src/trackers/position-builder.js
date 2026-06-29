@@ -4,12 +4,12 @@ import { fetchWalletPortfolio } from "../screener/metrics-fetcher.js";
 import { upsertPosition } from "../db/positions.js";
 import { getWallet } from "../db/wallets.js";
 
-// Cap pools per wallet to bound LPAgent cost (mirrors the evaluator's breadth cap).
-const MAX_POOLS = 6;
+// Cap pools per wallet to bound Agent Meridian cost (mirrors the evaluator's breadth cap).
+const MAX_POOLS = 3;
 
 /**
  * Refresh a wallet's reconstructed LP positions (entry→exit) from Meteora: its current open
- * pools (portfolio/open) ∪ discovered_from, each studied via LPAgent topPositions. Upserts into
+ * pools (portfolio/open) ∪ discovered_from, each studied via Agent Meridian topPositions. Upserts into
  * the positions table (idempotent by position id). Use this to keep positions fresh for the
  * dataset / orchestrator independent of the scoring evaluator.
  *
@@ -37,7 +37,7 @@ export async function refreshWalletPositions(address) {
   if (pools.size === 0) return 0;
 
   let count = 0;
-  await runConcurrent([...pools], 3, async (poolAddr) => {
+  await runConcurrent([...pools], 1, async (poolAddr) => {
     try {
       const studied = await studyTopLPers({ pool_address: poolAddr, limit: 20 });
       const owner = studied.owners.find((o) => o.address === address);

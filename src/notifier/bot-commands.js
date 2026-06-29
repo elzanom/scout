@@ -39,7 +39,7 @@ export async function handleBotCommand(text) {
       return sendMessage(
         "Laminar Scout commands:\n" +
         "/status — scout summary\n" +
-        "/wallets [status] — wallet list\n" +
+        "/wallets [all|candidate|tracked|rejected|top|new] — wallet list\n" +
         "/top — top wallets\n" +
         "/signals — recent signals\n" +
         "/weights — Darwinian signal weights"
@@ -60,20 +60,39 @@ export async function handleBotCommand(text) {
     case "/wallets": {
       const status = args[0] || null;
       const db = getDb();
-      let sql = "SELECT address, status, score, win_rate, total_positions, total_pnl_usd FROM wallets";
+      const base = "SELECT address, status, score, win_rate, total_positions, total_pnl_usd, evaluation_count, last_evaluated FROM wallets";
+      let sql = base;
       const params = [];
-      if (status && ["candidate", "tracked", "top", "rejected"].includes(status.toLowerCase())) {
+      let title = "📋 Wallets";
+      let orderBy = "score DESC";
+
+      if (status === "new" || status === "fresh") {
+        // Freshly discovered candidates that have never been evaluated.
+        sql += " WHERE status = 'candidate' AND (evaluation_count IS NULL OR evaluation_count = 0)";
+        orderBy = "first_seen DESC";
+        title = "👶 Fresh Candidates";
+      } else if (status && ["candidate", "tracked", "top", "rejected"].includes(status.toLowerCase())) {
         sql += " WHERE status = ?";
         params.push(status.toLowerCase());
+        if (status.toLowerCase() === "candidate") {
+          // Newest evaluations first, so the report varies cycle-to-cycle.
+          orderBy = "last_evaluated DESC, score DESC";
+          title = "⚪ Candidate Wallets";
+        } else {
+          title = `📋 ${status.charAt(0).toUpperCase() + status.slice(1)} Wallets`;
+        }
       }
-      sql += " ORDER BY score DESC LIMIT 20";
+      sql += ` ORDER BY ${orderBy} LIMIT 20`;
       const rows = db.prepare(sql).all(...params);
       if (!rows.length) return sendMessage("No wallets found.");
-      const lines = rows.map((w) =>
-        `<code>${escapeHtml(w.address)}</code>\n` +
-        `${w.status} | score ${w.score?.toFixed(1) ?? "?"} | WR ${fmtPct(w.win_rate)} | pos ${w.total_positions ?? 0} | PNL ${fmtUsd(w.total_pnl_usd)}`
-      );
-      return sendHTML(`📋 Wallets\n\n${lines.join("\n\n")}`);
+      const lines = rows.map((w) => {
+        const evalNote = w.status === "candidate" && w.evaluation_count
+          ? ` | evals ${w.evaluation_count}`
+          : "";
+        return `<code>${escapeHtml(w.address)}</code>\n` +
+          `${w.status} | score ${w.score?.toFixed(1) ?? "?"} | WR ${fmtPct(w.win_rate)} | pos ${w.total_positions ?? 0} | PNL ${fmtUsd(w.total_pnl_usd)}${evalNote}`;
+      });
+      return sendHTML(`${title}\n\n${lines.join("\n\n")}`);
     }
 
     case "/top": {

@@ -1,32 +1,24 @@
 'use client';
-import { fmtNumber, fmtAgo } from '../lib/format';
+import { fmtAgo } from '../lib/format';
 
 export default function TopStatusBar({ state, connected }) {
-  const pills = [
-    { label: 'Latest scan', value: state?.latestSnapshotAt ? `#${state.latestSnapshotAt}` : '—' },
-    { label: 'Pools scanned', value: state?.snapshots ?? '—' },
-    { label: 'Wallets', value: state?.wallets ?? '—' },
-    { label: 'Top wallets', value: state?.topWallets ?? '—' },
-    { label: 'Open pos', value: state?.openPositions ?? '—' },
-    { label: 'Signals today', value: state?.signalsToday ?? '—' },
-  ];
+  const wallets = state?.wallets ?? '—';
+  const top = state?.topWallets ?? '—';
+  const open = state?.openPositions ?? '—';
+  const signals = state?.signalsToday ?? '—';
+  const latest = state?.latestSnapshotAt ? fmtAgo(state.latestSnapshotAt) : '—';
 
   return (
     <div className="status-bar">
-      {pills.map((p) => (
-        <div key={p.label} className="status-pill">
-          {p.label}: <b>{p.value}</b>
-        </div>
-      ))}
       <div className="status-pill">
         <span className={`dot ${connected ? 'live' : 'offline'}`} />
         <b>{connected ? 'LIVE' : 'OFFLINE'}</b>
       </div>
-      {state?.latestSnapshotAt && (
-        <div className="status-pill small">
-          updated {fmtAgo(state.latestSnapshotAt)}
-        </div>
-      )}
+      <div className="status-pill"><b>{wallets}</b> wallets</div>
+      <div className="status-pill"><b className="cyan">{top}</b> top</div>
+      <div className="status-pill"><b>{open}</b> open</div>
+      <div className="status-pill"><b>{signals}</b> signals today</div>
+      <div className="status-pill small">updated {latest}</div>
     </div>
   );
 }

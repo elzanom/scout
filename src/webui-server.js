@@ -4,7 +4,7 @@ import { log } from "./utils/logger.js";
 import { initDb, getDb, closeDb } from "./db/index.js";
 import { handleApi } from "./webui/api-router.js";
 import { initWebSocketServer } from "./webui/ws-broadcaster.js";
-import { serveStatic } from "./webui/static-server.js";
+import { serveStatic, ROOT_ALIASES } from "./webui/static-server.js";
 
 function createWebuiServer() {
   return http.createServer((req, res) => {
@@ -33,7 +33,7 @@ function createWebuiServer() {
     }
 
     // Static dashboard assets (fallback to index.html for SPA routes)
-    if (url.pathname === "/" || url.pathname.startsWith("/dashboard")) {
+    if (url.pathname === "/" || url.pathname.startsWith("/dashboard") || ROOT_ALIASES.has(url.pathname)) {
       if (serveStatic(req, res)) return;
       res.writeHead(200, { "content-type": "text/html" });
       res.end(serveIndexFallback());
@@ -87,7 +87,7 @@ export function mountWebui(server) {
       return;
     }
 
-    if (url.pathname === "/" || url.pathname.startsWith("/dashboard")) {
+    if (url.pathname === "/" || url.pathname.startsWith("/dashboard") || ROOT_ALIASES.has(url.pathname)) {
       if (serveStatic(req, res)) return;
       res.writeHead(200, { "content-type": "text/html" });
       res.end(serveIndexFallback());

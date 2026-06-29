@@ -1,13 +1,18 @@
 import fs from "fs";
 import path from "path";
+import { ZipArchive } from "archiver";
 import { getDb } from "../db/index.js";
 import { config } from "../../config/config.js";
 import { getStateCache, touchCycle } from "./state-cache.js";
 import { loadWeights, getWeightsSummary } from "../signals/weights.js";
 import { buildWalletInsight, exportWalletInsights } from "../dataset/insights.js";
+import { buildSmartWalletFeed, writeSmartWalletFeed } from "../laminar-feed/smart-wallet-feed.js";
+import { exportLaminarTrainingOutputs } from "../dataset/laminar-export.js";
+import { formatTokenPair } from "../db/token-info.js";
 import { repoPath } from "../../repo-root.js";
 
 const VERSION = "0.1.0";
+const DEFAULT_LIMIT = 100;
 
 function json(res, data, status = 200) {
   res.writeHead(status, { "content-type": "application/json" });
@@ -28,7 +33,7 @@ function parseQuery(url) {
   return q;
 }
 
-function limitOffset(q, defaults = { limit: 50, max: 500 }) {
+function limitOffset(q, defaults = { limit: 50, max: 50_000 }) {
   const limit = Math.min(parseInt(q.limit, 10) || defaults.limit, defaults.max);
   const offset = Math.max(parseInt(q.offset, 10) || 0, 0);
   return { limit, offset };
@@ -67,7 +72,7 @@ export async function handleApi(req, res) {
           const address = segments[1];
           const wallet = db.prepare("SELECT * FROM wallets WHERE address = ?").get(address);
           if (!wallet) return notFound(res);
-          const positions = db.prepare("SELECT * FROM positions WHERE wallet_address = ? ORDER BY entry_timestamp DESC LIMIT 100").all(address);
+          const positions = db.prepare("SELECT * FROM positions WHERE wallet_address = ? ORDER BY entry_timestamp DESC LIMIT 100").all(address).map((p) => ({ ...p, token_pair: formatTokenPair(p), token_pair_raw: p.token_pair }));
           const discovery = db.prepare("SELECT * FROM wallet_discovery_log WHERE wallet_address = ? ORDER BY discovered_at DESC LIMIT 50").all(address);
           return json(res, { wallet, positions, discovery_log: discovery });
         }
@@ -82,7 +87,9 @@ export async function handleApi(req, res) {
         if (q.wallet) { where.push("wallet_address = @wallet"); params.wallet = q.wallet; }
         if (q.pool) { where.push("pool_address = @pool"); params.pool = q.pool; }
         const sql = `SELECT * FROM positions ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY entry_timestamp DESC LIMIT @limit OFFSET @offset`;
-        return json(res, { positions: db.prepare(sql).all(params) });
+        const rows = db.prepare(sql).all(params);
+        const positions = rows.map((p) => ({ ...p, token_pair: formatTokenPair(p), token_pair_raw: p.token_pair }));
+        return json(res, { positions });
       }
 
       case "/api/signals": {
@@ -183,6 +190,87 @@ export async function handleApi(req, res) {
         try {
           const result = await exportWalletInsights({ statuses, limit, format });
           return json(res, { ok: true, format, exported: result });
+        } catch (err) {
+          return json(res, { error: err.message }, 500);
+        }
+      }
+
+      case "/api/laminar/smart-wallets": {
+        if (req.method === "POST") {
+          try {
+            const result = writeSmartWalletFeed();
+            return json(res, { ok: true, ...result });
+          } catch (err) {
+            return json(res, { error: err.message }, 500);
+          }
+        }
+        const limit = Math.min(parseInt(q.limit, 10) || DEFAULT_LIMIT, 500);
+        const minScore = Number(q.min_score ?? config.tiers.topWalletMinScore ?? 0);
+        return json(res, buildSmartWalletFeed({ limit, minScore }));
+      }
+
+      case "/api/laminar/training": {
+        if (req.method === "POST") {
+          try {
+            const result = await exportLaminarTrainingOutputs();
+            return json(res, { ok: true, ...result });
+          } catch (err) {
+            return json(res, { error: err.message }, 500);
+          }
+        }
+        return json(res, { error: "method not allowed" }, 405);
+      }
+
+      case "/api/laminar/training/zip": {
+        if (req.method !== "POST" && req.method !== "GET") {
+          return json(res, { error: "method not allowed" }, 405);
+        }
+        try {
+          // Always refresh training outputs before zipping so the download is current.
+          const exported = await exportLaminarTrainingOutputs();
+          const files = [
+            exported.lessonsPath,
+            exported.performancePath,
+            exported.messagesPath,
+            exported.weightsPath,
+            exported.poolMemoryPath,
+            exported.tuningJsonPath,
+            exported.tuningPromptPath,
+            config.dataset.exportPath,
+          ].filter(Boolean).filter((p) => fs.existsSync(p));
+
+          const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+          const filename = `laminar-scout-training-${timestamp}.zip`;
+
+          res.writeHead(200, {
+            "content-type": "application/zip",
+            "content-disposition": `attachment; filename="${filename}"`,
+          });
+
+          const archive = new ZipArchive({ zlib: { level: 6 } });
+          archive.on("error", (err) => {
+            log("api_zip_error", err.message);
+            if (!res.headersSent) json(res, { error: err.message }, 500);
+          });
+          archive.on("warning", (warn) => log("api_zip_warn", warn.message));
+          archive.pipe(res);
+
+          for (const filePath of files) {
+            const name = path.basename(filePath);
+            archive.file(filePath, { name });
+          }
+
+          // Include a small manifest so Laminar/Vipera knows what each file is.
+          const manifest = {
+            generated_at: new Date().toISOString(),
+            source: "laminar-scout",
+            files: files.map((p) => path.basename(p)),
+            note: "For manual tuning, start with laminar-tuning-prompt.txt and laminar-tuning-summary.json. Use laminar-messages.jsonl only for fine-tuning. Skip decision-traces.jsonl unless debugging.",
+          };
+          archive.append(JSON.stringify(manifest, null, 2), { name: "manifest.json" });
+
+          await archive.finalize();
+          return;
         } catch (err) {
           return json(res, { error: err.message }, 500);
         }

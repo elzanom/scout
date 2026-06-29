@@ -64,6 +64,9 @@ const DEFAULTS_FLAT = {
   blockedLaunchpads: [], // e.g. ["letsbonk.fun", "pump.fun"]
   minTokenAgeHours: 4, // null = no minimum
   maxTokenAgeHours: null, // null = no maximum
+  // Vipera/Laminar parity: holder concentration filters (used when set; null = off).
+  maxBotHoldersPct: null, // e.g. 0.30 = top-bot/bundler holders cap
+  maxTop10Pct: null, // e.g. 0.60 = top-10 holder rate cap
   // Signal Validation
   minCombinedConfidence: 0.70,
   signalExpiryMinutes: 60,
@@ -161,6 +164,8 @@ export const config = {
     blockedLaunchpads: m.blockedLaunchpads,
     minTokenAgeHours: m.minTokenAgeHours,
     maxTokenAgeHours: m.maxTokenAgeHours,
+    maxBotHoldersPct: m.maxBotHoldersPct ?? null,
+    maxTop10Pct: m.maxTop10Pct ?? null,
   },
   signals: {
     minCombinedConfidence: m.minCombinedConfidence,

@@ -221,7 +221,14 @@ async function boot() {
     log("startup", "Helius webhook receiver enabled");
   } else {
     log("startup", "Helius webhook receiver disabled — Helius used only for historical backfill");
-    server = http.createServer();
+    // Minimal HTTP server for dashboard only (no webhook mounted).
+    server = http.createServer((req, res) => {
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("not found");
+    });
+    server.listen(config.env.webhookPort, () => {
+      log("startup", `dashboard server on :${config.env.webhookPort} (webhook disabled)`);
+    });
   }
   mountWebui(server);
   // Dashboard is served on the default webhook server port (3001); no dedicated UI port.

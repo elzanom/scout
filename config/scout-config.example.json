@@ -35,6 +35,8 @@
   "maxBinStep": 125,
   "minTokenFeesSol": 30,
   "requireSolPair": true,
+  "maxBotHoldersPct": null,
+  "maxTop10Pct": null,
 
   "// Signal Validation": "",
   "minCombinedConfidence": 0.70,

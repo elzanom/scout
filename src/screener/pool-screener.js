@@ -169,6 +169,27 @@ export function getRawPoolScreeningRejectReason(pool, s = config.screening) {
   if (s.requireSolPair && !isSolPair(pool)) {
     return `not a SOL pair (${base?.symbol ?? "?"}/${quote?.symbol ?? "?"})`;
   }
+
+  // Vipera/Laminar parity: holder concentration filters. Prefer cached token_info
+  // (already enriched from GMGN/Jupiter) over live pool object.
+  const baseMint = base?.address || pool?.base_mint;
+  let top10Pct = numeric(pool?.top_10_holder_rate);
+  let botPct = numeric(pool?.bundler_rate ?? pool?.bot_holder_rate);
+  if ((top10Pct == null || botPct == null) && baseMint) {
+    try {
+      const ti = getTokenInfo(baseMint);
+      if (ti) {
+        if (top10Pct == null) top10Pct = numeric(ti.top10_holder_rate);
+        if (botPct == null) botPct = numeric(ti.bundler_rate);
+      }
+    } catch { /* ignore — token_info may not be ready */ }
+  }
+  if (s.maxTop10Pct != null && top10Pct != null && top10Pct > s.maxTop10Pct) {
+    return `top10 holder rate ${(top10Pct * 100).toFixed(1)}% above maxTop10Pct ${(s.maxTop10Pct * 100).toFixed(1)}%`;
+  }
+  if (s.maxBotHoldersPct != null && botPct != null && botPct > s.maxBotHoldersPct) {
+    return `bot/bundler holder rate ${(botPct * 100).toFixed(1)}% above maxBotHoldersPct ${(s.maxBotHoldersPct * 100).toFixed(1)}%`;
+  }
   return null;
 }
 

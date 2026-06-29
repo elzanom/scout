@@ -230,6 +230,36 @@ CREATE TABLE IF NOT EXISTS signal_weight_history (
 );
 
 CREATE INDEX IF NOT EXISTS idx_signal_weight_history_at ON signal_weight_history(recalculated_at);
+
+-- Chart indicators (RSI/supertrend/MACD/Bollinger) per pool per timeframe. Populated by
+-- src/collector/chart-indicators.js (optional feed; absent rows are simply missing entries).
+-- Used by Laminar's chart preset logic for entry/exit signal selection.
+CREATE TABLE IF NOT EXISTS chart_indicators (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  pool_address TEXT NOT NULL,
+  snapshot_id INTEGER,
+  timeframe TEXT NOT NULL,             -- '5m' | '15m' | '1h' | '4h' | '1d'
+  timestamp INTEGER NOT NULL,
+  rsi_14 REAL,
+  supertrend_signal TEXT,              -- 'up' | 'down'
+  supertrend_value REAL,
+  macd_signal REAL,
+  macd_histogram REAL,
+  bollinger_upper REAL,
+  bollinger_lower REAL,
+  entry_preset TEXT,
+  exit_preset TEXT,
+  open_price REAL,
+  high_price REAL,
+  low_price REAL,
+  close_price REAL,
+  volume REAL,
+  fetched_at INTEGER DEFAULT (unixepoch()),
+  FOREIGN KEY (snapshot_id) REFERENCES market_snapshots(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_chart_indicators_pool_tf ON chart_indicators(pool_address, timeframe, timestamp);
+CREATE INDEX IF NOT EXISTS idx_chart_indicators_snapshot ON chart_indicators(snapshot_id);
 `;
 
 // ─── Additive column migrations (idempotent ALTER TABLE ADD COLUMN) ───────────

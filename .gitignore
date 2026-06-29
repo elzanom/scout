@@ -5,7 +5,14 @@ webui/out/
 src/webui-dist/
 .env
 scout-config.json
-data/*.db
+signals-output.json
+.agents/
+.claude/
+laminar-vps-snapshot/
+viper-vps-snapshot/
+data/
+output/
+dataset/
 logs/*.log
 logs/*.jsonl
 dataset/*.csv

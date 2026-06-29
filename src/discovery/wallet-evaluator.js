@@ -7,11 +7,22 @@ import { upsertPosition, positionStats, getPositionsByWallet } from "../db/posit
 import { getWallet, listWallets, updateWalletMetrics, setWalletTier, bumpEvaluation, updateWalletStrategy } from "../db/wallets.js";
 import { calculateWalletScore } from "../wallets/scoring.js";
 import { deriveWalletExtras } from "../wallets/tag-computer.js";
+import { patchStagedSignals } from "../signals/stage-signals.js";
 
 const num = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const SOL_SYMBOLS = new Set(["sol", "wsol"]);
+
+// Solana addresses are base58-encoded 32-byte public keys (43-44 chars). Same rules apply to
+// wallets and pools, so we use a simple length/base58 check to avoid treating arbitrary strings
+// (e.g. tx signatures, wallet addresses stored in discovered_from) as pool addresses.
+function isPoolAddress(addr) {
+  if (!addr || typeof addr !== "string") return false;
+  if (addr.length < 32 || addr.length > 44) return false;
+  if (!/^[1-9A-HJ-NP-Za-km-z]+$/.test(addr)) return false;
+  return true;
+}
 
 function isSolToken(token) {
   if (!token) return false;
@@ -22,28 +33,40 @@ function isSolToken(token) {
 
 function isSolPair(tokenPair) {
   if (!tokenPair) return false;
-  const parts = String(tokenPair).toLowerCase().split("/");
-  return parts.some((p) => SOL_SYMBOLS.has(p.trim()));
+  const raw = String(tokenPair);
+  const lower = raw.toLowerCase();
+  const parts = lower.split("/");
+  // token_pair can be symbol/SOL-mint (e.g. "pump/So111111..."); accept SOL mint as the quote side too.
+  if (parts.some((p) => SOL_SYMBOLS.has(p.trim()))) return true;
+  if (parts.length === 2 && parts[1] === SOL_MINT.toLowerCase()) return true;
+  // Also accept the raw mint appearing anywhere in the pair string as a safety net.
+  if (lower.includes(SOL_MINT.toLowerCase())) return true;
+  return false;
 }
 
-// Cap breadth pools per wallet (portfolio/open footprint) to bound LPAgent cost.
-const MAX_BREADTH_POOLS = 6;
+// Cap breadth pools per wallet (portfolio/open footprint) to bound Agent Meridian cost.
+// Keep this small: Agent Meridian is flaky, and Meteora portfolio/history already gives us
+// the bulk of position-level data. We only study the discovered-from pool plus the top 3
+// open pools by deposit value.
+const MAX_BREADTH_POOLS = 3;
 
-// Concurrency for LPAgent studyTopLPers calls per wallet. Lower than pool-discovery
-// to reduce load on LPAgent and cut 500 retries under parallel evaluation.
-const STUDY_CONCURRENCY = 2;
+// Concurrency for Agent Meridian studyTopLPers calls per wallet. Serial (1) to avoid bursts.
+const STUDY_CONCURRENCY = 1;
+
+// If Agent Meridian fails for every studied pool, we still evaluate using Meteora data only.
+const AM_FALLBACK_OK = true;
 
 /**
- * Core evaluation: given a wallet's LPAgent aggregate + positions for a pool, compute metrics,
+ * Core evaluation: given a wallet's Agent Meridian aggregate + positions for a pool, compute metrics,
  * score, and tier (tracked/rejected). Writes positions + metrics + tier to DB.
  * Win-rate prefers position-level outcomes (closed positions); falls back to the (unreliable)
- * LPAgent aggregate win_rate_pct only when position-level has too few closed samples.
+ * Agent Meridian aggregate win_rate_pct only when position-level has too few closed samples.
  *
  * @param {string} address
  * @param {object|null} aggregate owner aggregate from studyTopLPers (may be null if wallet not in top list)
  * @param {object[]} positions scout-shaped position rows
  */
-export function applyEvaluation(address, aggregate, positions = []) {
+export function applyEvaluation(address, aggregate, positions = [], { amUnavailable = false } = {}) {
   // Persist position-level data (serves the dataset + win-rate). Idempotent via position id.
   for (const p of positions) {
     try {
@@ -89,6 +112,13 @@ export function applyEvaluation(address, aggregate, positions = []) {
     return { address, status: "candidate", reason: "insufficient_data", metrics };
   }
 
+  // Enrich staged signal snapshots for this wallet's positions with study_win_rate.
+  if (Number.isFinite(winRate)) {
+    for (const p of positions) {
+      if (p.pool_address) patchStagedSignals(p.pool_address, { study_win_rate: winRate });
+    }
+  }
+
   const score = calculateWalletScore(metrics);
   const t = config.tiers;
   const reasons = [];
@@ -96,10 +126,18 @@ export function applyEvaluation(address, aggregate, positions = []) {
   if (metrics.win_rate < t.minWinRate) reasons.push(`win_rate ${metrics.win_rate.toFixed(3)} < ${t.minWinRate}`);
   if (metrics.total_positions < t.minTotalPositions) reasons.push(`positions ${metrics.total_positions} < ${t.minTotalPositions}`);
   if (metrics.avg_fee_yield < t.minFeeYield) reasons.push(`fee_yield ${metrics.avg_fee_yield.toFixed(2)} < ${t.minFeeYield}`);
-  const passes = reasons.length === 0;
+  let passes = reasons.length === 0;
 
   const extras = deriveWalletExtras(metrics, getPositionsByWallet(address));
   updateWalletMetrics(address, { ...metrics, score, ...extras });
+
+  // Fallback: if Agent Meridian was entirely down for this wallet but Meteora-only score passes,
+  // promote to tracked anyway. We know the wallet is a real LP from on-chain/portfolio data.
+  if (!passes && amUnavailable && score >= t.minWalletScore) {
+    passes = true;
+    reasons.push("agent_meridian_unavailable_fallback");
+  }
+
   if (passes) {
     setWalletTier(address, { status: "tracked", is_tracked: true });
   } else {
@@ -107,7 +145,7 @@ export function applyEvaluation(address, aggregate, positions = []) {
   }
   bumpEvaluation(address);
 
-  log("eval", `${address.slice(0, 8)}… → ${passes ? "TRACKED" : "rejected"} | score=${score} wr=${metrics.win_rate.toFixed(2)} pos=${metrics.total_positions} feeYield=${metrics.avg_fee_yield.toFixed(2)} pnl=$${metrics.total_pnl_usd.toFixed(0)}${passes ? "" : ` | ${reasons.join("; ")}`}`);
+  log("eval", `${address.slice(0, 8)}… → ${passes ? "TRACKED" : "rejected"} | score=${score} wr=${metrics.win_rate.toFixed(2)} pos=${metrics.total_positions} feeYield=${metrics.avg_fee_yield.toFixed(2)} pnl=$${metrics.total_pnl_usd.toFixed(0)}${passes && !amUnavailable ? "" : ` | ${reasons.join("; ")}`}`);
   return { address, status: passes ? "tracked" : "rejected", score, metrics, reject_reason: passes ? null : reasons.join("; ") };
 }
 
@@ -117,11 +155,18 @@ export function applyEvaluation(address, aggregate, positions = []) {
 function positionFromMeteora(p) {
   const entry = p.createdAt ? Math.floor(p.createdAt) : null;
   const exit = p.closedAt ? Math.floor(p.closedAt) : null;
+  // tokenPair from Meteora is often "mintX/mintY" (mint addresses). Keep the raw string for
+  // backwards compatibility but also store the mints so the UI/API can render readable tickers.
+  const [rawX, rawY] = String(p.tokenPair || "").split("/");
+  const tokenXMint = p.tokenXSymbol || rawX || null;
+  const tokenYMint = p.tokenYSymbol || rawY || null;
   return {
     id: p.positionAddress,
     wallet_address: null, // filled by caller
     pool_address: p.poolAddress,
     token_pair: p.tokenPair || null,
+    token_x_mint: tokenXMint,
+    token_y_mint: tokenYMint,
     entry_timestamp: entry,
     bin_lower: p.lowerBinId ?? null,
     bin_upper: p.upperBinId ?? null,
@@ -141,7 +186,7 @@ function positionFromMeteora(p) {
 /**
  * Build a stub position row from a Helius WalletActivity event. We lack bins/capital/PnL
  * from Helius, so this is intentionally sparse — it adds to position count, pool breadth,
- * and last-active timing, while leaving financial fields for LPAgent / portfolio to fill.
+ * and last-active timing, while leaving financial fields for Agent Meridian / portfolio to fill.
  */
 function positionFromActivity(ev) {
   const entry = ev.timestamp ? Math.floor(ev.timestamp) : null;
@@ -151,6 +196,8 @@ function positionFromActivity(ev) {
     wallet_address: ev.wallet,
     pool_address: ev.pools[0] || null,
     token_pair: null,
+    token_x_mint: null,
+    token_y_mint: null,
     entry_timestamp: entry,
     bin_lower: null,
     bin_upper: null,
@@ -214,15 +261,15 @@ async function fetchHeliusHistory(address) {
 /**
  * Evaluate a single wallet by merging FOUR data sources:
  *  1. Helius history backfill: historical Meteora DLMM activity (position opens) to boost
- *     position count and pool breadth for wallets LPAgent does not rank as top-20.
+ *     position count and pool breadth for wallets Agent Meridian does not rank as top-20.
  *  2. portfolio/open (reliable, always present): the wallet's OWN open positions — count,
  *     current PnL/fees per pool, and open win-rate.
  *  3. Meteora position PnL history: per-pool closed positions with bin range, deposits,
- *     withdrawals, fees, and durations — independent of LPAgent coverage.
- *  4. LPAgent studyTopLPers across discovered_from + open pools + history pools:
+ *     withdrawals, fees, and durations — independent of Agent Meridian coverage.
+ *  4. Agent Meridian studyTopLPers across discovered_from + open pools + history pools:
  *     preferred strategy/range and supplementary aggregates.
  * Meteora portfolio history is now the primary source for realized outcomes, reducing
- * dependence on LPAgent's sparse top-3 historical coverage.
+ * dependence on Agent Meridian's sparse top-3 historical coverage.
  */
 export async function evaluateWallet(address) {
   const wallet = getWallet(address);
@@ -265,12 +312,21 @@ export async function evaluateWallet(address) {
     log("eval_warn", `meteora position history ${address.slice(0, 8)} failed: ${err.message}`);
   }
 
-  // 4) LPAgent breadth: discovered_from + open pools + history pools.
+  // 4) Agent Meridian breadth: discovered_from (must look like a pool address) + top open pools.
+  // History/meteora pools are intentionally NOT studied here — they massively multiply
+  // Agent Meridian calls and 500s, while Meteora positions already give us closed-position data.
   const pools = new Set();
-  if (wallet.discovered_from) pools.add(wallet.discovered_from);
-  for (const p of portfolio.pools.slice(0, MAX_BREADTH_POOLS)) pools.add(p.poolAddress);
-  for (const pool of extraPools) pools.add(pool);
-  for (const p of meteoraPositions) if (p.pool_address) pools.add(p.pool_address);
+  if (wallet.discovered_from && isPoolAddress(wallet.discovered_from)) {
+    pools.add(wallet.discovered_from);
+  } else if (wallet.discovered_from) {
+    log("eval_warn", `${address.slice(0, 8)}… discovered_from ${wallet.discovered_from.slice(0, 8)}… is not a pool address; skipping Agent Meridian study`);
+  }
+  const topOpenPools = [...portfolio.pools]
+    .filter((p) => p.poolAddress)
+    .sort((a, b) => (b.totalDeposit || 0) - (a.totalDeposit || 0))
+    .slice(0, MAX_BREADTH_POOLS)
+    .map((p) => p.poolAddress);
+  for (const poolAddr of topOpenPools) pools.add(poolAddr);
 
   let lpPnl = 0;
   let lpFees = 0;
@@ -278,12 +334,14 @@ export async function evaluateWallet(address) {
   const lpAges = [];
   const allPositions = [];
   let strategy = null;
+  let studySuccessCount = 0;
   if (pools.size) {
     await runConcurrent([...pools], STUDY_CONCURRENCY, async (poolAddr) => {
       try {
         const studied = await studyTopLPers({ pool_address: poolAddr, limit: 20 });
+        studySuccessCount += 1;
         const owner = studied.owners.find((o) => o.address === address);
-        if (!owner) return; // not a top-20 LPer here — no LPAgent data for this pool
+        if (!owner) return; // not a top-20 LPer here — no Agent Meridian data for this pool
         const a = owner.aggregate || {};
         lpPnl += num(a.total_pnl_usd);
         lpFees += num(a.total_fees_usd);
@@ -300,8 +358,12 @@ export async function evaluateWallet(address) {
   }
   if (strategy) updateWalletStrategy(address, strategy);
 
+  if (studySuccessCount === 0 && pools.size > 0) {
+    log("eval_warn", `Agent Meridian unavailable for ${address.slice(0, 8)}…; using Meteora-only fallback`);
+  }
+
   // Merge Meteora positions (primary) and Helius stubs. Meteora data wins because it has
-  // full financials; LPAgent positions are already in allPositions.
+  // full financials; Agent Meridian positions are already in allPositions.
   const positionMap = new Map(allPositions.map((p) => [p.id, p]));
   for (const p of meteoraPositions) positionMap.set(p.id, p);
   for (const p of histPositions) if (!positionMap.has(p.id)) positionMap.set(p.id, p);
@@ -316,7 +378,13 @@ export async function evaluateWallet(address) {
   const openWinRate = decided.length ? decided.filter((p) => netOf(p) > 0).length / decided.length : 0;
   const mean = (arr) => (arr.length ? arr.reduce((s, x) => s + x, 0) / arr.length : 0);
 
-  // Total realized PnL from Meteora if available; otherwise fall back to portfolio + LPAgent sum.
+  // Fallback fee yield from closed Meteora positions when Agent Meridian data is absent.
+  const closedMeteora = meteoraPositions.filter((p) => p.status === "closed" && Number.isFinite(p.fee_yield));
+  const meteoraFeeYield = closedMeteora.length
+    ? mean(closedMeteora.map((p) => p.fee_yield))
+    : null;
+
+  // Total realized PnL from Meteora if available; otherwise fall back to portfolio + Agent Meridian sum.
   let totalPnlUsd = portfolio.pools.reduce((s, p) => s + p.pnl, 0) + lpPnl;
   let totalFeesUsd = portfolio.pools.reduce((s, p) => s + p.unclaimedFees, 0) + lpFees;
   try {
@@ -333,21 +401,24 @@ export async function evaluateWallet(address) {
   const aggregate = {
     total_pnl_usd: totalPnlUsd,
     total_fees_usd: totalFeesUsd,
-    // open (portfolio) + closed (Meteora + LPAgent) + historical stubs (Helius)
+    // open (portfolio) + closed (Meteora + Agent Meridian) + historical stubs (Helius)
     total_positions: portfolio.totalPositions + mergedPositions.length,
-    fee_percent: portfolio.pools.length ? mean(portfolio.pools.map((p) => p.feePerTvl24h)) : mean(lpFeeYields),
+    fee_percent: portfolio.pools.length
+      ? mean(portfolio.pools.map((p) => p.feePerTvl24h))
+      : (mean(lpFeeYields) || meteoraFeeYield || 0),
     avg_age_hours: mean(lpAges),
     hist_pool_count: histPoolCount,
     last_active_position_at: lastActiveAt,
     win_rate_pct: openWinRate * 100,
     meteora_total_closed: meteoraTotalClosed,
   };
-  return applyEvaluation(address, aggregate, mergedPositions);
+  const amUnavailable = AM_FALLBACK_OK && pools.size > 0 && studySuccessCount === 0;
+  return applyEvaluation(address, aggregate, mergedPositions, { amUnavailable });
 }
 
 /**
  * Process the candidate queue: evaluate each wallet (with its own breadth). Bounded by
- * maxWalletCandidatesPerCycle. Sequential per wallet to stay gentle on LPAgent rate limits.
+ * maxWalletCandidatesPerCycle. Sequential per wallet to stay gentle on Agent Meridian rate limits.
  */
 export async function runEvaluatorBatch({ limit = config.discovery.maxWalletCandidatesPerCycle } = {}) {
   const candidates = listWallets({ status: "candidate", limit });
@@ -365,5 +436,18 @@ export async function runEvaluatorBatch({ limit = config.discovery.maxWalletCand
 
   const summary = results.reduce((a, r) => { a[r.status] = (a[r.status] || 0) + 1; return a; }, {});
   log("eval", `evaluator batch done: ${results.length} evaluated → ${JSON.stringify(summary)}`);
-  return { evaluated: results.length, summary, results };
+
+  const performanceDetails = results
+    .filter((r) => r && r.metrics)
+    .map((r) => ({
+      address: r.address,
+      status: r.status,
+      score: r.score ?? r.metrics?.score ?? 0,
+      win_rate: r.metrics?.win_rate ?? 0,
+      positions: r.metrics?.total_positions ?? 0,
+      fee_yield: r.metrics?.avg_fee_yield ?? 0,
+      pnl_usd: r.metrics?.total_pnl_usd ?? 0,
+      reject_reason: r.reject_reason || null,
+    }));
+  return { evaluated: results.length, summary, results, performanceDetails };
 }

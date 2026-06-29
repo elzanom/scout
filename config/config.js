@@ -17,7 +17,7 @@ const CONFIG_PATH = repoPath("scout-config.json");
 const DEFAULTS_FLAT = {
   // Wallet Discovery
   discoveryEnabled: true,
-  discoveryIntervalMinutes: 60,
+  discoveryIntervalMinutes: 15,
   poolDiscoveryEnabled: true,
   txMiningEnabled: false,
   followWinnersEnabled: false,
@@ -34,7 +34,7 @@ const DEFAULTS_FLAT = {
   // Wallet Tier Thresholds (calibrated to real DLMM LP data — SPEC's 0.65/20/45 were aspirational
   // and rejected ~all LPs; real net win-rate for active LPs is ~0.3-0.5)
   minWalletScore: 40,
-  minWinRate: 0.40,
+  minWinRate: 0.70,
   minTotalPositions: 10,
   minFeeYield: 0.5,
   topWalletLimit: 100,
@@ -43,8 +43,8 @@ const DEFAULTS_FLAT = {
   autoDemoteTopWallet: true,
   // Pool Screening
   minFeeActiveTvlRatio: 0.05,
-  minTvl: 10000,
-  maxTvl: 150000,
+  minTvl: 150000,
+  maxTvl: 1500000,
   minVolume: 500,
   minOrganic: 60,
   minBinStep: 80,
@@ -53,7 +53,7 @@ const DEFAULTS_FLAT = {
   requireSolPair: true,         // only discover/evaluate pools paired with SOL
   // Pool Screening — discovery-API query + validation extras (mirror meridian config.screening).
   // Not listed in scout-config.example.json, so these defaults apply; overridable via scout-config.json.
-  timeframe: "5m",
+  timeframe: "30m",
   category: "trending",
   minQuoteOrganic: 60,
   minHolders: 500,
@@ -62,16 +62,20 @@ const DEFAULTS_FLAT = {
   excludeHighSupplyConcentration: true,
   allowedLaunchpads: [], // [] = no allow-list
   blockedLaunchpads: [], // e.g. ["letsbonk.fun", "pump.fun"]
-  minTokenAgeHours: null, // null = no minimum
+  minTokenAgeHours: 4, // null = no minimum
   maxTokenAgeHours: null, // null = no maximum
   // Signal Validation
   minCombinedConfidence: 0.70,
   signalExpiryMinutes: 60,
+  // Helius webhook receiver (real-time TX mining + signal trigger). Disable to use Helius only for historical backfill.
+  heliusWebhookEnabled: true,
+  // Polling signal scan: periodically scans top wallets and emits signals. Independent from webhook.
+  signalScanEnabled: true,
   // Collection
-  backfillDays: 90,
+  backfillDays: 30,
   snapshotIntervalMinutes: 15,
   walletRankUpdateIntervalMinutes: 60,
-  screeningIntervalMinutes: 30,
+  screeningIntervalMinutes: 15,
   // Output
   signalOutputMode: "file",
   signalOutputPath: "./signals-output.json",
@@ -161,6 +165,8 @@ export const config = {
   signals: {
     minCombinedConfidence: m.minCombinedConfidence,
     expiryMinutes: m.signalExpiryMinutes,
+    heliusWebhookEnabled: m.heliusWebhookEnabled ?? true,
+    signalScanEnabled: m.signalScanEnabled ?? true,
   },
   collection: {
     backfillDays: m.backfillDays,
@@ -172,10 +178,20 @@ export const config = {
     mode: m.signalOutputMode,
     signalPath: resolvePath(m.signalOutputPath),
     apiEndpoint: m.signalApiEndpoint,
+    laminarFeedPath: resolvePath(m.laminarFeedPath || "./output/laminar-smart-wallets.json"),
   },
   dataset: {
     exportPath: resolvePath(m.datasetExportPath),
     autoExportOnClose: m.autoExportOnClose,
+  },
+  signalWeights: {
+    enabled: m.signalWeightsEnabled ?? true,
+    windowDays: m.signalWeightsWindowDays ?? 60,
+    minSamples: m.signalWeightsMinSamples ?? 10,
+    boostFactor: m.signalWeightsBoostFactor ?? 1.05,
+    decayFactor: m.signalWeightsDecayFactor ?? 0.95,
+    weightFloor: m.signalWeightsWeightFloor ?? 0.3,
+    weightCeiling: m.signalWeightsWeightCeiling ?? 2.5,
   },
   seed: {
     walletsFile: m.seedWalletsFile ? resolvePath(m.seedWalletsFile) : m.seedWalletsFile,
@@ -184,6 +200,8 @@ export const config = {
   env: {
     heliusApiKey: process.env.HELIUS_API_KEY || "",
     heliusRpcUrl: process.env.HELIUS_RPC_URL || "",
+    heliusPumpRpcUrl: process.env.HELIUS_PUMP_RPC_URL || "",
+    heliusUsePumpForRpc: String(process.env.HELIUS_USE_PUMP_FOR_RPC || "").toLowerCase() === "true",
     heliusWebhookSecret: process.env.HELIUS_WEBHOOK_SECRET || "",
     birdeyeApiKey: process.env.BIRDEYE_API_KEY || "",
     telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || "",
@@ -192,5 +210,14 @@ export const config = {
     webhookPort: Number(process.env.WEBHOOK_PORT) || 3001,
     logLevel: process.env.LOG_LEVEL || "info",
     verbose: String(process.env.VERBOSE || "").toLowerCase() === "true",
+    // Helius key-manager tuning
+    rateLimitCooldownMs: Math.max(0, Number(process.env.RATE_LIMIT_COOLDOWN_MS) || 60_000),
+    failureCooldownMs: Math.max(0, Number(process.env.FAILURE_COOLDOWN_MS) || 30_000),
+    maxFailuresPerKey: Math.max(1, Number(process.env.MAX_FAILURES_PER_KEY) || 5),
+    // Meteora pool API rate-limit tuning
+    meteoraPoolMaxInFlight: Math.max(1, Number(process.env.METEORA_POOL_MAX_IN_FLIGHT) || 2),
+    meteoraPoolDispatchDelayMs: Math.max(0, Number(process.env.METEORA_POOL_DISPATCH_DELAY_MS) || 250),
+    meteoraPoolCircuitFailureThreshold: Math.max(1, Number(process.env.METEORA_POOL_CIRCUIT_FAILURE_THRESHOLD) || 5),
+    meteoraPoolCircuitOpenMs: Math.max(0, Number(process.env.METEORA_POOL_CIRCUIT_OPEN_MS) || 60_000),
   },
 };

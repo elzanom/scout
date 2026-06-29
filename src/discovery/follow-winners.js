@@ -27,15 +27,16 @@ export async function runFollowWinners({ topLimit = 20, poolLimit = 6, ownerLimi
     }
     if (!pools.size) continue;
 
-    await runConcurrent([...pools], 3, async (poolAddr) => {
+    await runConcurrent([...pools], 1, async (poolAddr) => {
       try {
-        const studied = await studyTopLPers({ pool_address: poolAddr, limit: ownerLimit });
+        const studied = await studyTopLPers({ pool_address: poolAddr, limit: Math.min(ownerLimit, 10) });
         for (const o of studied.owners) {
           if (!o.address || o.address === top.address) continue; // skip the top wallet itself
           const { isNew } = upsertWallet({
             address: o.address,
             source: "follow_winner",
-            discovered_from: top.address,
+            discovered_from: poolAddr,
+            source_detail: top.address,
           });
           if (isNew) {
             logDiscovery({ wallet_address: o.address, discovery_source: "follow_winner", source_detail: top.address });

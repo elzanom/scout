@@ -66,10 +66,11 @@ export async function handleApi(req, res) {
     // transaction; ?decode=1 auto-derives the close tx from the remove/claim_fee event.
     let decoded = null;
     try {
-      if (q.tx) decoded = await decodePositionBinRange({ txSig: q.tx });
-      else if (q.decode === "1") decoded = await decodePositionBinRange({ events });
-    } catch (err) {
-      decoded = { error: err.message };
+      if (q.tx) decoded = await decodePositionBinRange({ txSig: q.tx, positionId: address });
+      else if (q.decode === "1") decoded = await decodePositionBinRange({ events, positionId: address });
+    } catch {
+      // Sanitized: never echo internal error details to the client.
+      decoded = { error: "decode_failed" };
     }
     return json(res, { position, events, summary, decoded });
   }

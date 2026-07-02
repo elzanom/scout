@@ -61,7 +61,7 @@ export async function syncPositionEvents(positionAddress) {
  * @param {{ txSig?: string, events?: object[] }} opts
  * @returns {Promise<{ signature, slot, blockTime, binRange, instructions }|null>}
  */
-export async function decodePositionBinRange({ txSig, events } = {}) {
+export async function decodePositionBinRange({ txSig, events, positionId } = {}) {
   const sig =
     txSig ||
     (Array.isArray(events) && events.find((e) => e.event_type === "remove")?.signature) ||
@@ -73,6 +73,17 @@ export async function decodePositionBinRange({ txSig, events } = {}) {
     const tx = Array.isArray(txs) ? txs[0] : txs;
     if (!tx) return null;
     const decoded = decodeDlmmInstructionsInTx(tx);
+    // When a positionId is given, ensure the tx actually references it — otherwise ?tx= could be
+    // used as an arbitrary-transaction decode oracle (IDOR on public on-chain data + Helius cost).
+    if (positionId) {
+      const referenced = decoded
+        .filter((d) => d.kind === "instruction")
+        .some((d) => (d.accounts || []).includes(positionId));
+      if (!referenced) {
+        log("position_history_warn", `tx ${sig.slice(0, 8)}… does not reference position ${positionId.slice(0, 8)}…`);
+        return null;
+      }
+    }
     const compact = (d) => {
       const o = { kind: d.kind, name: d.name || d.eventId };
       if (d.lowerBinId != null) o.lowerBinId = d.lowerBinId;

@@ -28,9 +28,14 @@ export function serveStatic(req, res) {
     pathname = pathname.replace(/^\/dashboard/, "");
   }
 
+  // Reject traversal before joining (pathname is already URI-decoded above, so %2e%2e -> "..").
+  if (pathname.split("/").includes("..")) return false;
   let filePath = path.join(DIST, pathname);
   if (filePath.endsWith("/") || !path.extname(filePath)) filePath = path.join(filePath, "index.html");
-  if (!filePath.startsWith(DIST)) return false;
+  // Strict containment: resolved path must live INSIDE DIST. path.relative (not startsWith)
+  // blocks sibling directories that merely share DIST's prefix (e.g. webui-dist.old/).
+  const rel = path.relative(DIST, filePath);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) return false;
   if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) return false;
 
   const ext = path.extname(filePath);

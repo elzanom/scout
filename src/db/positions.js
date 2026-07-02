@@ -72,7 +72,7 @@ export function positionStats(address) {
        SUM(CASE WHEN status = 'closed' AND pnl_usd <= 0 THEN 1 ELSE 0 END) AS lost,
        COALESCE(SUM(CASE WHEN status = 'closed' THEN pnl_usd ELSE 0 END), 0) AS total_pnl_usd,
        COALESCE(SUM(fees_earned_usd), 0) AS total_fees_usd,
-       COALESCE(AVG(fee_yield), 0) AS avg_fee_yield,
+       COALESCE(AVG(CASE WHEN status = 'closed' THEN fee_yield END), 0) AS avg_fee_yield,
        COALESCE(AVG(CASE WHEN status = 'closed' THEN duration_hours END), 0) AS avg_duration_hours
      FROM positions WHERE wallet_address = ?`,
   ).get(address);

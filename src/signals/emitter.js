@@ -89,7 +89,11 @@ function writeToFile(signal) {
   if (!Array.isArray(arr)) arr = [];
   arr.push(signal);
   if (arr.length > MAX_FILE_SIGNALS) arr = arr.slice(-MAX_FILE_SIGNALS);
-  fs.writeFileSync(path, JSON.stringify(arr, null, 2));
+  // Atomic write: serialize to a temp file then rename, so a concurrent reader (Laminar
+  // polling this file) never observes a truncated/partial JSON mid-write.
+  const tmp = `${path}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(arr, null, 2));
+  fs.renameSync(tmp, path);
 }
 
 async function postSignal(signal) {

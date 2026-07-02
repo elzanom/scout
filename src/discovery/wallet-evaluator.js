@@ -401,8 +401,10 @@ export async function evaluateWallet(address) {
   const aggregate = {
     total_pnl_usd: totalPnlUsd,
     total_fees_usd: totalFeesUsd,
-    // open (portfolio) + closed (Meteora + Agent Meridian) + historical stubs (Helius)
-    total_positions: portfolio.totalPositions + mergedPositions.length,
+    // Open positions come from portfolio.totalPositions (Meteora /portfolio/open). Only count
+    // NON-open entries from mergedPositions so open positions aren't double-counted (the
+    // Meteora history fetch uses status:"all", which also returns the open set).
+    total_positions: portfolio.totalPositions + mergedPositions.filter((p) => p.status !== "open").length,
     fee_percent: portfolio.pools.length
       ? mean(portfolio.pools.map((p) => p.feePerTvl24h))
       : (mean(lpFeeYields) || meteoraFeeYield || 0),

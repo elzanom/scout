@@ -18,6 +18,21 @@ export async function emitSignal({ wallet, pool, confidence, reasons, suggested,
     ? `${pool.base.symbol}/${pool.quote.symbol}`
     : pool.name || null);
 
+  // Cooldown dedup (config.signals.expiryMinutes): if this (wallet, pool) was already
+  // signaled within the expiry window, skip — otherwise the webhook path emits a duplicate
+  // on every addLiquidity TX. This is the single emission chokepoint for both webhook + polling.
+  const expiryMin = Number(config.signals.expiryMinutes) || 0;
+  if (expiryMin > 0) {
+    const cutoff = ts - expiryMin * 60;
+    const dup = getDb().prepare(
+      "SELECT 1 FROM signals WHERE triggered_by = ? AND pool_address = ? AND created_at >= ? LIMIT 1",
+    ).get(wallet.address, pool.pool, cutoff);
+    if (dup) {
+      log("signal", `skip dup ${wallet.address?.slice(0, 8)}… @ ${pool.pool?.slice(0, 8)}… — within ${expiryMin}min cooldown`);
+      return null;
+    }
+  }
+
   const info = getDb().prepare(
     `INSERT INTO signals (
        pool_address, token_pair, trigger_type, triggered_by,

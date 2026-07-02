@@ -210,6 +210,7 @@ CREATE INDEX IF NOT EXISTS idx_positions_pool_status       ON positions(pool_add
 CREATE INDEX IF NOT EXISTS idx_positions_wallet_entry      ON positions(wallet_address, entry_timestamp);
 CREATE INDEX IF NOT EXISTS idx_market_snapshots_pool_ts    ON market_snapshots(pool_address, timestamp);
 CREATE INDEX IF NOT EXISTS idx_signals_status_created      ON signals(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_signals_trigger_pool_ts     ON signals(triggered_by, pool_address, created_at);
 CREATE INDEX IF NOT EXISTS idx_wallet_discovery_log_wallet ON wallet_discovery_log(wallet_address);
 CREATE INDEX IF NOT EXISTS idx_training_records_position   ON training_records(position_id);
 

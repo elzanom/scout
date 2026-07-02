@@ -132,10 +132,8 @@ async function cycleSignalScan({ topLimit = 50 } = {}) {
     }
     for (const p of pools) {
       scanned++;
-      const already = getDb()
-        .prepare("SELECT 1 FROM signals WHERE triggered_by = ? AND pool_address = ? LIMIT 1")
-        .get(w.address, p.poolAddress);
-      if (already) continue;
+      // Cooldown dedup lives in emitSignal (config.signals.expiryMinutes) and is shared with
+      // the webhook path, so no separate permanent dedup is needed here.
       const r = await processWalletEntry(w.address, p.poolAddress);
       if (r.emitted) emitted++;
     }

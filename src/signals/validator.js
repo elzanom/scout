@@ -80,5 +80,6 @@ export async function processWalletEntry(walletAddress, poolAddress) {
     suggested: verdict.suggested,
     poolMetrics: verdict.poolMetrics,
   });
+  if (!signal) return { emitted: false, reasons: [...verdict.reasons, "cooldown"] };
   return { emitted: true, signal, reasons: verdict.reasons };
 }

@@ -831,13 +831,15 @@ export async function fetchPoolPositionPnl(wallet, poolAddress, { status = "all"
  * positions without relying solely on Agent Meridian.
  * @param {string} wallet
  * @param {{ status?: 'all'|'closed'|'open', daysBack?: number, pageSize?: number }} opts
- * @returns {Promise<{ totalClosedPositions: number, positions: object[] }>}
+ * @returns {Promise<{ totalPositions: number, positions: object[] }>}
  */
 export async function fetchWalletPositionHistory(wallet, { status = "all", daysBack = 365, pageSize = 100 } = {}) {
   const pools = [];
   let page = 1;
   let hasNext = true;
-  let totalClosedPositions = 0;
+  // /portfolio returns `totalPositions` (lifetime, window-independent). There is no
+  // closed-only count on this endpoint — that lives on /portfolio/total (fetchWalletPortfolioTotal).
+  let totalPositions = 0;
 
   while (hasNext) {
     const summary = await withMeteoraPoolLimit(() =>
@@ -858,8 +860,8 @@ export async function fetchWalletPositionHistory(wallet, { status = "all", daysB
     );
 
     if (Array.isArray(summary?.pools)) pools.push(...summary.pools);
-    if (Number.isFinite(summary?.totalClosedPositions)) {
-      totalClosedPositions = summary.totalClosedPositions;
+    if (Number.isFinite(summary?.totalPositions)) {
+      totalPositions = summary.totalPositions;
     }
     hasNext = summary?.hasNext === true;
     page += 1;
@@ -892,7 +894,7 @@ export async function fetchWalletPositionHistory(wallet, { status = "all", daysB
   }
 
   return {
-    totalClosedPositions: Number(totalClosedPositions) || 0,
+    totalPositions: Number(totalPositions) || 0,
     positions,
   };
 }

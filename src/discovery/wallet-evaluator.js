@@ -306,8 +306,7 @@ export async function evaluateWallet(address) {
     meteoraPositions = history.positions
       .map((p) => ({ ...positionFromMeteora(p), wallet_address: address }))
       .filter((p) => !config.screening.requireSolPair || isSolPair(p.token_pair));
-    meteoraTotalClosed = history.totalClosedPositions;
-    log("eval", `meteora history ${address.slice(0, 8)}…: ${meteoraPositions.length} positions, ${meteoraTotalClosed} closed`);
+    log("eval", `meteora history ${address.slice(0, 8)}…: ${meteoraPositions.length} positions fetched`);
   } catch (err) {
     log("eval_warn", `meteora position history ${address.slice(0, 8)} failed: ${err.message}`);
   }
@@ -389,6 +388,10 @@ export async function evaluateWallet(address) {
   let totalFeesUsd = portfolio.pools.reduce((s, p) => s + p.unclaimedFees, 0) + lpFees;
   try {
     const totals = await fetchWalletPortfolioTotal(address);
+    // /portfolio/total is the authoritative source for the lifetime closed-position count.
+    // (The /portfolio summary endpoint exposes `totalPositions`, not a closed-only count, so
+    // sourcing it from history was always 0.)
+    if (Number.isFinite(totals.totalClosedPositions)) meteoraTotalClosed = totals.totalClosedPositions;
     if (totals.totalPnlUsd !== 0 || totals.totalClosedPositions > 0) {
       totalPnlUsd = totals.totalPnlUsd;
       // Keep unclaimed fees from portfolio/open; Meteora /portfolio/total is realized-only.

@@ -52,7 +52,8 @@ export async function handleApi(req, res) {
   // before the exact-match switch. On-demand syncs the Meteora event timeline unless ?refresh=0.
   if (url.pathname.startsWith("/api/position/")) {
     const segments = url.pathname.split("/").filter(Boolean);
-    const address = decodeURIComponent(segments[1] || "");
+    // pathname "/api/position/<addr>" → ["api","position","<addr>"] → address is index 2
+    const address = decodeURIComponent(segments[2] || "");
     if (!address) return notFound(res);
     try {
       if (q.refresh !== "0") await syncPositionEvents(address);

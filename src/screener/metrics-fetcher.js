@@ -834,28 +834,29 @@ export async function fetchPoolPositionPnl(wallet, poolAddress, { status = "all"
  * @returns {Promise<{ events: object[] }>}
  */
 export async function fetchPositionEvents(positionAddress) {
-  return withMeteoraPoolLimit(() =>
-    withRetry(async () => {
-      const res = await fetch(
-        `${POOL_PORTFOLIO_BASE}/positions/${encodeURIComponent(positionAddress)}/historical`,
-      );
-      if (res.status === 429) {
-        recordMeteoraPool429();
-        const e = new Error(`positions/historical ${res.status} ${res.statusText}`);
-        e.status = res.status;
-        e.retryAfter = res.headers.get("retry-after");
-        throw e;
-      }
-      if (!res.ok) {
-        const e = new Error(`positions/historical ${res.status} ${res.statusText}`);
-        e.status = res.status;
-        throw e;
-      }
-      recordMeteoraPoolSuccess();
-      const d = await res.json();
-      return { events: Array.isArray(d?.events) ? d.events : [] };
-    })
-  );
+  // On-demand, user-triggered single request (dashboard click / /position command): bypass the
+  // discovery circuit breaker + concurrency limiter (withMeteoraPoolLimit) so a manual lookup
+  // isn't blocked when the breaker is open from bulk discovery load. withRetry still handles
+  // transient 429/5xx. Don't drive recordMeteoraPool* — an on-demand call shouldn't trip/reset
+  // the discovery breaker.
+  return withRetry(async () => {
+    const res = await fetch(
+      `${POOL_PORTFOLIO_BASE}/positions/${encodeURIComponent(positionAddress)}/historical`,
+    );
+    if (res.status === 429) {
+      const e = new Error(`positions/historical ${res.status} ${res.statusText}`);
+      e.status = res.status;
+      e.retryAfter = res.headers.get("retry-after");
+      throw e;
+    }
+    if (!res.ok) {
+      const e = new Error(`positions/historical ${res.status} ${res.statusText}`);
+      e.status = res.status;
+      throw e;
+    }
+    const d = await res.json();
+    return { events: Array.isArray(d?.events) ? d.events : [] };
+  });
 }
 
 /**

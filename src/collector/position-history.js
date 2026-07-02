@@ -1,5 +1,7 @@
 import { fetchPositionEvents } from "../screener/metrics-fetcher.js";
 import { upsertPositionEvent } from "../db/position-events.js";
+import { heliusApiPost } from "../rpc/helius-router.js";
+import { decodeDlmmInstructionsInTx, binRangeFromDecoded } from "./dlmm-decoder.js";
 import { log } from "../utils/logger.js";
 
 /**
@@ -46,4 +48,48 @@ export async function syncPositionEvents(positionAddress) {
 
   log("position_history", `sync ${positionAddress.slice(0, 8)}…: ${ingested}/${events.length} events`);
   return { positionId: positionAddress, ingested, total: events.length };
+}
+
+/**
+ * Decode a position's bin range from an on-chain Meteora DLMM transaction — the same
+ * "tx-decode" path Metlex uses (rangeSource:"tx-decode"), independent of the Meteora API.
+ *
+ * Pass an explicit `txSig`, or omit it and pass the cached `events` ledger: the close tx
+ * (the remove / claim_fee event signature) is derived automatically, which yields the full
+ * [lower, upper] range (remove_liquidity_by_range_2 / claim_fee_2 carry both bin ids).
+ *
+ * @param {{ txSig?: string, events?: object[] }} opts
+ * @returns {Promise<{ signature, slot, blockTime, binRange, instructions }|null>}
+ */
+export async function decodePositionBinRange({ txSig, events } = {}) {
+  const sig =
+    txSig ||
+    (Array.isArray(events) && events.find((e) => e.event_type === "remove")?.signature) ||
+    (Array.isArray(events) && events.find((e) => e.event_type === "claim_fee")?.signature);
+  if (!sig) return null;
+
+  try {
+    const txs = await heliusApiPost("/v0/transactions/", { transactions: [sig] }, {}, { maxAttempts: 3 });
+    const tx = Array.isArray(txs) ? txs[0] : txs;
+    if (!tx) return null;
+    const decoded = decodeDlmmInstructionsInTx(tx);
+    const compact = (d) => {
+      const o = { kind: d.kind, name: d.name || d.eventId };
+      if (d.lowerBinId != null) o.lowerBinId = d.lowerBinId;
+      if (d.upperBinId != null) o.upperBinId = d.upperBinId;
+      if (d.amountX != null) o.amountX = d.amountX;
+      if (d.amountY != null) o.amountY = d.amountY;
+      return o;
+    };
+    return {
+      signature: sig,
+      slot: tx.slot ?? null,
+      blockTime: tx.timestamp ?? tx.blockTime ?? null,
+      binRange: binRangeFromDecoded(decoded),
+      instructions: decoded.map(compact),
+    };
+  } catch (err) {
+    log("position_history_warn", `decode bin range ${sig.slice(0, 8)}…: ${err.message}`);
+    return null;
+  }
 }

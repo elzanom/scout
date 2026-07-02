@@ -10,7 +10,7 @@ import { buildSmartWalletFeed, writeSmartWalletFeed } from "../laminar-feed/smar
 import { exportLaminarTrainingOutputs } from "../dataset/laminar-export.js";
 import { formatTokenPair } from "../db/token-info.js";
 import { getPositionEvents, getPnlFromEvents } from "../db/position-events.js";
-import { syncPositionEvents } from "../collector/position-history.js";
+import { syncPositionEvents, decodePositionBinRange } from "../collector/position-history.js";
 import { repoPath } from "../../repo-root.js";
 
 const VERSION = "0.1.0";
@@ -62,7 +62,16 @@ export async function handleApi(req, res) {
     const position = db.prepare("SELECT * FROM positions WHERE id = ?").get(address);
     const events = getPositionEvents(address);
     const summary = getPnlFromEvents(address);
-    return json(res, { position, events, summary });
+    // On-chain bin-range decode (Metlex-style tx-decode). Opt-in: ?tx=<sig> decodes a specific
+    // transaction; ?decode=1 auto-derives the close tx from the remove/claim_fee event.
+    let decoded = null;
+    try {
+      if (q.tx) decoded = await decodePositionBinRange({ txSig: q.tx });
+      else if (q.decode === "1") decoded = await decodePositionBinRange({ events });
+    } catch (err) {
+      decoded = { error: err.message };
+    }
+    return json(res, { position, events, summary, decoded });
   }
 
   try {

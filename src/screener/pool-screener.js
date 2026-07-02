@@ -179,8 +179,17 @@ export function getRawPoolScreeningRejectReason(pool, s = config.screening) {
     try {
       const ti = getTokenInfo(baseMint);
       if (ti) {
-        if (top10Pct == null) top10Pct = numeric(ti.top10_holder_rate);
-        if (botPct == null) botPct = numeric(ti.bundler_rate);
+        // GMGN stores these as 0-100 percentages (see collector/token-info.js); thresholds
+        // below are 0-1 fractions, so normalize here so both the comparison and the *100
+        // display in the reject reason stay correct.
+        if (top10Pct == null) {
+          const v = numeric(ti.top10_holder_rate);
+          top10Pct = v == null ? null : v / 100;
+        }
+        if (botPct == null) {
+          const v = numeric(ti.bundler_rate);
+          botPct = v == null ? null : v / 100;
+        }
       }
     } catch { /* ignore — token_info may not be ready */ }
   }

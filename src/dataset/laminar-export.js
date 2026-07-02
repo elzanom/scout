@@ -159,11 +159,15 @@ function buildPerformanceEntry(p, snap, ss, wallet) {
   const pnlUsd = Number(p.pnl_usd) || 0;
   const capital = Number(p.capital_usd) || 0;
   const finalValue = capital + pnlUsd;
+  // Position fee yield = fees earned / capital (percent). p.fee_yield holds the pool's
+  // feePerTvl24h, NOT the position's realized fee return, so don't feed it to close-reason.
+  const feesEarned = Number(p.fees_earned_usd) || 0;
+  const posFeeYieldPct = capital > 0 ? (feesEarned / capital) * 100 : 0;
   const closeReason = estimateCloseReason({
     pnlUsd,
     pnlPct: p.pnl_pct,
     durationHours: p.duration_hours,
-    feeYield: p.fee_yield,
+    feeYield: posFeeYieldPct,
     volatility: ss.volatility ?? snap?.token_volatility_24h ?? null,
     organicScore: ss.organic_score ?? snap?.base_organic_score ?? null,
   });

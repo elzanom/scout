@@ -1,7 +1,9 @@
 import { getDb } from "../db/index.js";
 import { getStateCache } from "../webui/state-cache.js";
-import { sendMessage, sendHTML } from "./telegram.js";
+import { sendMessage, sendHTML, notifyPosition } from "./telegram.js";
 import { getWeightsSummary } from "../signals/weights.js";
+import { syncPositionEvents, decodePositionBinRange } from "../collector/position-history.js";
+import { getPositionEvents, getPnlFromEvents } from "../db/position-events.js";
 
 const now = () => Math.floor(Date.now() / 1000);
 
@@ -42,7 +44,8 @@ export async function handleBotCommand(text) {
         "/wallets [all|candidate|tracked|rejected|top|new] — wallet list\n" +
         "/top — top wallets\n" +
         "/signals — recent signals\n" +
-        "/weights — Darwinian signal weights"
+        "/weights — Darwinian signal weights\n" +
+        "/position <positionAddress> — PnL + bin range (Metlex-style)"
       );
 
     case "/status": {
@@ -123,6 +126,29 @@ export async function handleBotCommand(text) {
     case "/weights": {
       const summary = getWeightsSummary();
       return sendMessage("⚖️ Signal Weights\n\n" + summary);
+    }
+
+    case "/position": {
+      const addr = args[0];
+      if (!addr) return sendMessage("Usage: /position <positionAddress>");
+      try {
+        await syncPositionEvents(addr);
+      } catch (e) {
+        return sendMessage(`Sync failed: ${e.message}`);
+      }
+      const events = getPositionEvents(addr);
+      const summary = getPnlFromEvents(addr);
+      const position = getDb().prepare("SELECT * FROM positions WHERE id = ?").get(addr) || null;
+      let binRange = null;
+      try {
+        binRange = (await decodePositionBinRange({ events, positionId: addr }))?.binRange || null;
+      } catch {
+        binRange = null;
+      }
+      if (!events.length && !position) {
+        return sendMessage("No data for that position (is it a Meteora DLMM position NFT address?)");
+      }
+      return notifyPosition({ positionId: addr, position, summary, binRange, events });
     }
 
     default:

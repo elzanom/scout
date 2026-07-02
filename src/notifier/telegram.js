@@ -304,6 +304,40 @@ export async function notifyPoolWalletDiscovery({ pool, name, newWallets }) {
   return sendHTML(html);
 }
 
+const teleUsd = (n) =>
+  n == null || Number.isNaN(Number(n)) ? "?" : "$" + Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 });
+
+/** Position PnL report (Metlex-style): deposit/withdraw/fees/PnL + on-chain bin range.
+ *  `binRange` = { lowerBinId, upperBinId, source } (from dlmm-decoder), `summary` = getPnlFromEvents(). */
+export async function notifyPosition({ positionId, position, summary = {}, binRange, events = [] }) {
+  if (!isEnabled()) return null;
+  const pair = position?.token_pair || "—";
+  const positive = (summary.pnl_usd ?? 0) >= 0;
+  const sign = positive ? "+" : "";
+  const dur = summary.duration_ms != null ? (summary.duration_ms / 3_600_000).toFixed(1) + "h" : "?";
+  const bin = binRange?.upperBinId != null
+    ? `${binRange.lowerBinId}…${binRange.upperBinId} (w${binRange.upperBinId - binRange.lowerBinId + 1})`
+    : binRange?.lowerBinId != null ? `${binRange.lowerBinId}…?` : "?";
+  const binSrc = binRange?.source ? ` <i>(${escapeHtml(binRange.source)})</i>` : "";
+  const evLines = events.slice(0, 8).map((e) => {
+    const t = { add: "Deposit", remove: "Withdraw", claim_fee: "ClaimFee" }[e.event_type] || e.event_type;
+    return `• ${t} ${teleUsd(e.total_usd)}`;
+  }).join("\n");
+  const html =
+    `📍 <b>Position PnL</b>\n\n` +
+    `Pair: <b>${escapeHtml(pair)}</b>\n` +
+    `Status: ${position?.status || "?"}\n` +
+    `Bin range: <b>${bin}</b>${binSrc}\n\n` +
+    `Deposit: ${teleUsd(summary.total_deposit_usd)}\n` +
+    `Withdraw: ${teleUsd(summary.total_withdraw_usd)}\n` +
+    `Fees: ${teleUsd(summary.total_fees_usd)}\n` +
+    `PnL: <b>${sign}${teleUsd(summary.pnl_usd)}</b> (${sign}${(summary.pnl_pct ?? 0).toFixed(2)}%)\n` +
+    `Duration: ${dur}\n\n` +
+    (evLines ? `Events:\n${evLines}` : "<i>No events</i>") +
+    `\n\n<code>${escapeHtml(positionId)}</code>`;
+  return sendHTML(html);
+}
+
 function escapeHtml(text) {
   return String(text)
     .replace(/&/g, "&amp;")

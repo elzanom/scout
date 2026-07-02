@@ -49,7 +49,12 @@ export async function backfillWalletActivity(wallet, opts = {}) {
     if (!Array.isArray(page) || page.length === 0) break;
 
     let oldestThisPage = before;
+    let lastRawSig = null;
     for (const tx of page) {
+      // Track the oldest raw signature on the page (pages are newest-first, so the last tx
+      // seen is the oldest) independent of whether it parses as Meteora activity.
+      const rawSig = tx?.signature || (Array.isArray(tx?.signatures) ? tx.signatures[0] : null);
+      if (rawSig) lastRawSig = rawSig;
       const ev = parseActivityEvent(tx, { knownPools });
       if (!ev) continue;
       scanned++;
@@ -61,7 +66,10 @@ export async function backfillWalletActivity(wallet, opts = {}) {
       if (ev.signature) oldestThisPage = ev.signature;
     }
 
-    before = oldestThisPage;
+    // Always advance the cursor using the oldest raw signature on the page. If we only used
+    // parsed-event signatures, a full page of non-Meteora txs would leave `before` unchanged
+    // and we'd re-fetch the same page forever (scanned never grows, so maxTx never trips).
+    before = lastRawSig || oldestThisPage;
     if (!before || page.length < pageSize) break;
     if (sleepMs > 0) await sleep(sleepMs);
   }

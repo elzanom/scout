@@ -23,7 +23,9 @@ import { fetchWalletPortfolio } from "./screener/metrics-fetcher.js";
 import { mountWebui, startWebuiServer } from "./webui-server.js";
 import { broadcastState, broadcastCycle, broadcastLog } from "./webui/ws-broadcaster.js";
 import { touchCycle } from "./webui/state-cache.js";
-import { startPolling, notifyError, notifyPools, notifyWallets, notifyPerformance, notifyPoolStudy, notifyPoolWalletDiscovery } from "./notifier/telegram.js";
+import { startPolling, notifyError, notifyPools, notifyWallets, notifyPerformance, notifyPoolStudy, notifyPoolWalletDiscovery, notifyPosition, isEnabled as telegramEnabled } from "./notifier/telegram.js";
+import { syncPositionEvents, decodePositionBinRange } from "./collector/position-history.js";
+import { getPositionEvents, getPnlFromEvents } from "./db/position-events.js";
 import { runPerPoolDiscoveryEval } from "./discovery/per-pool-pipeline.js";
 import { handleBotCommand, sendDailySummary } from "./notifier/bot-commands.js";
 import { recalculateWeights } from "./signals/weights.js";
@@ -141,6 +143,47 @@ async function cycleSignalScan({ topLimit = 50 } = {}) {
   log("signal", `scan: ${emitted} emitted across ${scanned} (wallet,pool) checks on ${tops.length} top wallet(s)`);
 }
 
+/**
+ * Proactive Telegram alert on tracked-position closes. Each cycle picks recently-closed positions
+ * that haven't been notified yet (bounded by positionNotifyWindowHours + positionNotifyBatch to
+ * avoid backfill spam), sends a Metlex-style PnL card, and marks them notified.
+ */
+async function cyclePositionNotifications() {
+  if (!telegramEnabled()) return;
+  const windowHours = Number(config.signals.positionNotifyWindowHours) || 2;
+  const batch = Number(config.signals.positionNotifyBatch) || 5;
+  const cutoff = Math.floor(Date.now() / 1000) - windowHours * 3600;
+
+  const rows = getDb().prepare(
+    `SELECT * FROM positions
+     WHERE status = 'closed' AND close_notified_at IS NULL
+       AND exit_timestamp IS NOT NULL AND exit_timestamp >= ?
+     ORDER BY exit_timestamp DESC LIMIT ?`,
+  ).all(cutoff, batch);
+  if (!rows.length) return;
+
+  let sent = 0;
+  for (const p of rows) {
+    try {
+      // Best-effort: fresh event ledger + on-chain bin range. Degrade gracefully on API failure.
+      try { await syncPositionEvents(p.id); } catch (err) { log("position_notify_warn", `sync ${p.id?.slice(0, 8)}: ${err.message}`); }
+      const events = getPositionEvents(p.id);
+      const summary = getPnlFromEvents(p.id);
+      let binRange = null;
+      try { binRange = (await decodePositionBinRange({ events, positionId: p.id }))?.binRange || null; } catch {}
+      await notifyPosition({ positionId: p.id, position: p, summary, binRange, events });
+      sent++;
+    } catch (err) {
+      log("position_notify_warn", `${p.id?.slice(0, 8)}: ${err.message}`);
+    } finally {
+      // Mark notified regardless of send outcome to avoid retry storms (window+batch bound the load).
+      getDb().prepare("UPDATE positions SET close_notified_at = ? WHERE id = ?")
+        .run(Math.floor(Date.now() / 1000), p.id);
+    }
+  }
+  log("position_notify", `cycle: ${sent}/${rows.length} closed position(s) notified`);
+}
+
 /** Build training records for closed positions that don't have one yet; auto-export if configured. */
 function buildMissingRecords() {
   const closed = getDb()
@@ -243,6 +286,12 @@ async function boot() {
     cron.schedule(everyNMin(Math.min(15, config.collection.screeningIntervalMinutes)), () => runSafe("signal_scan", cycleSignalScan));
   } else {
     log("startup", "Polling signal scan disabled");
+  }
+  if (config.signals.positionNotifyEnabled) {
+    cron.schedule(everyNMin(10), () => runSafe("position_notify", cyclePositionNotifications));
+    log("startup", `Position-close alerts enabled (window=${config.signals.positionNotifyWindowHours}h, batch=${config.signals.positionNotifyBatch})`);
+  } else {
+    log("startup", "Position-close notifications disabled");
   }
   cron.schedule("0 0 * * *", () => runSafe("signal_weights", () => recalculateWeights(config.signalWeights || {}))); // daily Darwinian recalc
   cron.schedule("0 9 * * *", () => runSafe("daily_summary", sendDailySummary)); // daily Telegram summary at 09:00

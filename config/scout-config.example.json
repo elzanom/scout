@@ -14,17 +14,15 @@
   "establishedMinTvl": 100000,
   "establishedMaxTvl": 2000000,
   "establishedMaxMcap": 5000000000,
-
   "// Wallet Tier Thresholds": "",
   "minWalletScore": 40,
-  "minWinRate": 0.40,
+  "minWinRate": 0.4,
   "minTotalPositions": 10,
   "minFeeYield": 0.5,
   "topWalletLimit": 100,
   "topWalletMinScore": 60,
   "autoPromoteToTracked": true,
   "autoDemoteTopWallet": true,
-
   "// Pool Screening (dari meridian)": "",
   "minFeeActiveTvlRatio": 0.05,
   "minTvl": 10000,
@@ -37,29 +35,24 @@
   "requireSolPair": true,
   "maxBotHoldersPct": null,
   "maxTop10Pct": null,
-
   "// Signal Validation": "",
-  "minCombinedConfidence": 0.70,
+  "minCombinedConfidence": 0.7,
   "signalExpiryMinutes": 60,
   "heliusWebhookEnabled": true,
   "signalScanEnabled": true,
-
   "// Collection": "",
   "backfillDays": 90,
   "snapshotIntervalMinutes": 15,
   "walletRankUpdateIntervalMinutes": 60,
   "screeningIntervalMinutes": 15,
-
   "// Output": "",
   "signalOutputMode": "file",
   "signalOutputPath": "./signals-output.json",
   "signalApiEndpoint": "",
   "laminarFeedPath": "./output/laminar-smart-wallets.json",
-
   "// Dataset Export": "",
   "datasetExportPath": "./dataset/training-records.csv",
   "autoExportOnClose": true,
-
   "// Darwinian Signal Weights (Laminar-compatible learning)": "",
   "signalWeightsEnabled": true,
   "signalWeightsWindowDays": 60,
@@ -68,8 +61,10 @@
   "signalWeightsDecayFactor": 0.95,
   "signalWeightsWeightFloor": 0.3,
   "signalWeightsWeightCeiling": 2.5,
-
   "// Seed (opsional)": "",
   "seedWalletsFile": "",
-  "seedWalletsOnStartup": false
+  "seedWalletsOnStartup": false,
+  "positionNotifyEnabled": false,
+  "positionNotifyWindowHours": 2,
+  "positionNotifyBatch": 5
 }

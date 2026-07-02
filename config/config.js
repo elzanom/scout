@@ -74,6 +74,10 @@ const DEFAULTS_FLAT = {
   heliusWebhookEnabled: true,
   // Polling signal scan: periodically scans top wallets and emits signals. Independent from webhook.
   signalScanEnabled: true,
+  // Proactive Telegram alert when a tracked position closes (Metlex-style PnL card). Opt-in.
+  positionNotifyEnabled: false,
+  positionNotifyWindowHours: 2, // only alert on closes within this recent window (bounds backfill spam)
+  positionNotifyBatch: 5,       // max alerts per cycle
   // Collection
   backfillDays: 30,
   snapshotIntervalMinutes: 15,
@@ -172,6 +176,9 @@ export const config = {
     expiryMinutes: m.signalExpiryMinutes,
     heliusWebhookEnabled: m.heliusWebhookEnabled ?? true,
     signalScanEnabled: m.signalScanEnabled ?? true,
+    positionNotifyEnabled: m.positionNotifyEnabled ?? false,
+    positionNotifyWindowHours: m.positionNotifyWindowHours ?? 2,
+    positionNotifyBatch: m.positionNotifyBatch ?? 5,
   },
   collection: {
     backfillDays: m.backfillDays,

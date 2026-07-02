@@ -340,6 +340,7 @@ const TOKEN_INFO_COLS = [
 const POSITIONS_COLS = [
   ["token_x_mint", "TEXT"], // base token mint (for readable pair formatting)
   ["token_y_mint", "TEXT"], // quote token mint (usually SOL or USDC)
+  ["close_notified_at", "INTEGER"], // epoch ts when a closed-position Telegram alert was sent (NULL = pending)
 ];
 
 function addColumn(db, table, col, type) {
@@ -359,6 +360,10 @@ export function runMigrations(db) {
   for (const [col, type] of POSITIONS_COLS) addColumn(db, "positions", col, type);
   try {
     db.exec("CREATE INDEX IF NOT EXISTS idx_training_records_snapshot ON training_records(entry_snapshot_id)");
+  } catch { /* index may pre-exist */ }
+  try {
+    // close_notified_at is a migrated column, so this index must be created after the ALTER above.
+    db.exec("CREATE INDEX IF NOT EXISTS idx_positions_close_notify ON positions(close_notified_at, exit_timestamp)");
   } catch { /* index may pre-exist */ }
 }
 

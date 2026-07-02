@@ -228,6 +228,7 @@ async function boot() {
       log("startup", `dashboard server on :${config.env.webhookPort} (webhook disabled)`);
     });
   }
+  server.on("error", (e) => log("fatal_error", `HTTP server error: ${e.message}`));
   mountWebui(server);
   // Dashboard is served on the default webhook server port (3001); no dedicated UI port.
   startPolling(async (msg) => {
@@ -257,6 +258,14 @@ async function boot() {
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+  // Global safety nets: log and survive rejected promises (default Node exits the daemon),
+  // and log+exit on truly uncaught synchronous exceptions so PM2 restarts cleanly.
+  process.on("unhandledRejection", (reason) => {
+    log("fatal_error", `unhandledRejection: ${reason?.stack || reason}`);
+  });
+  process.on("uncaughtException", (err) => {
+    log("fatal_error", `uncaughtException: ${err?.stack || err?.message || err}`);
+  });
 }
 
 boot();

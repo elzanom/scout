@@ -152,11 +152,27 @@ export async function rpcCall(method, params = [], opts = {}) {
  */
 async function withPremiumKeyRotation(fetchFn, opts = {}) {
   const manager = getHeliusKeyManager();
-  const maxAttempts = Math.max(1, Math.min(opts.maxAttempts || 5, manager.count || 1));
+  // Total retry attempts are independent of key count: a single-key deployment must still be
+  // able to wait out a 429 cooldown and retry, rather than failing after one attempt.
+  const maxAttempts = Math.max(1, opts.maxAttempts || 5);
   let lastError;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const key = manager.nextKey();
+    let key;
+    try {
+      key = manager.nextKey();
+    } catch (e) {
+      // All keys unhealthy (typically a single key in cooldown) — wait for the soonest one
+      // to recover and retry, if attempts remain.
+      const waitMs = manager.nearestCooldownMs();
+      if (waitMs > 0 && attempt < maxAttempts) {
+        log("helius_keys", `all keys cooling down — waiting ${Math.round(waitMs / 1000)}s before retry (${attempt}/${maxAttempts})`);
+        await sleep(Math.min(waitMs + 250, 60_000));
+        lastError = e;
+        continue;
+      }
+      throw e;
+    }
     try {
       const res = await fetchFn(key);
       if (!res.ok) {

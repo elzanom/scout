@@ -119,6 +119,22 @@ class HeliusKeyManager {
     throw new Error(`All ${this.keys.length} Helius API keys are unhealthy`);
   }
 
+  /**
+   * Milliseconds until the soonest key becomes healthy again. Returns 0 if any key is healthy
+   * right now. Callers can use this to wait + retry when nextKey() throws "all unhealthy"
+   * (e.g. a single key in a 429 cooldown) instead of failing the whole request.
+   */
+  nearestCooldownMs() {
+    const now = Date.now();
+    let min = Infinity;
+    for (const key of this.keys) {
+      const s = this.stats.get(key);
+      if (this._isHealthy(key)) return 0;
+      min = Math.min(min, Math.max(0, s.rateLimitedUntil - now, s.failedUntil - now));
+    }
+    return min === Infinity ? 0 : min;
+  }
+
   /** Mark a key as rate-limited. */
   markRateLimited(key, retryAfterSeconds = null) {
     const s = this.stats.get(key);

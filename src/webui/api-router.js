@@ -9,6 +9,8 @@ import { buildWalletInsight, exportWalletInsights } from "../dataset/insights.js
 import { buildSmartWalletFeed, writeSmartWalletFeed } from "../laminar-feed/smart-wallet-feed.js";
 import { exportLaminarTrainingOutputs } from "../dataset/laminar-export.js";
 import { formatTokenPair } from "../db/token-info.js";
+import { getPositionEvents, getPnlFromEvents } from "../db/position-events.js";
+import { syncPositionEvents } from "../collector/position-history.js";
 import { repoPath } from "../../repo-root.js";
 
 const VERSION = "0.1.0";
@@ -45,6 +47,23 @@ export async function handleApi(req, res) {
   const db = getDbSafe();
 
   if (!db) return json(res, { error: "database not ready" }, 503);
+
+  // Position detail (Metlex-style): /api/position/<positionAddress> — parameterized path handled
+  // before the exact-match switch. On-demand syncs the Meteora event timeline unless ?refresh=0.
+  if (url.pathname.startsWith("/api/position/")) {
+    const segments = url.pathname.split("/").filter(Boolean);
+    const address = decodeURIComponent(segments[1] || "");
+    if (!address) return notFound(res);
+    try {
+      if (q.refresh !== "0") await syncPositionEvents(address);
+    } catch (err) {
+      // Non-fatal: fall through to cached events + summary.
+    }
+    const position = db.prepare("SELECT * FROM positions WHERE id = ?").get(address);
+    const events = getPositionEvents(address);
+    const summary = getPnlFromEvents(address);
+    return json(res, { position, events, summary });
+  }
 
   try {
     switch (url.pathname) {

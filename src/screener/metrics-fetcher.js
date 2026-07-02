@@ -826,6 +826,39 @@ export async function fetchPoolPositionPnl(wallet, poolAddress, { status = "all"
 }
 
 /**
+ * A single position's cash-flow event timeline (Meteora /positions/{positionAddress}/historical).
+ * Returns add (deposit) / remove (withdraw) / claim_fee events with USD amounts + timestamps —
+ * the Metlex-style per-position ledger. Keyed by the POSITION (NFT) address, not a wallet.
+ *
+ * @param {string} positionAddress
+ * @returns {Promise<{ events: object[] }>}
+ */
+export async function fetchPositionEvents(positionAddress) {
+  return withMeteoraPoolLimit(() =>
+    withRetry(async () => {
+      const res = await fetch(
+        `${POOL_PORTFOLIO_BASE}/positions/${encodeURIComponent(positionAddress)}/historical`,
+      );
+      if (res.status === 429) {
+        recordMeteoraPool429();
+        const e = new Error(`positions/historical ${res.status} ${res.statusText}`);
+        e.status = res.status;
+        e.retryAfter = res.headers.get("retry-after");
+        throw e;
+      }
+      if (!res.ok) {
+        const e = new Error(`positions/historical ${res.status} ${res.statusText}`);
+        e.status = res.status;
+        throw e;
+      }
+      recordMeteoraPoolSuccess();
+      const d = await res.json();
+      return { events: Array.isArray(d?.events) ? d.events : [] };
+    })
+  );
+}
+
+/**
  * Full wallet position history across all pools. Fetches the wallet's portfolio list and then
  * per-pool position PnL details in parallel. Used by the evaluator to reconstruct closed
  * positions without relying solely on Agent Meridian.

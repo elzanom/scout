@@ -80,6 +80,28 @@ CREATE TABLE IF NOT EXISTS positions (
   FOREIGN KEY (wallet_address) REFERENCES wallets(address)
 );
 
+-- Per-position cash-flow event timeline (Meteora /positions/{positionAddress}/historical).
+-- Metlex-style: add (deposit) / remove (withdraw) / claim_fee events with USD + timestamps.
+CREATE TABLE IF NOT EXISTS position_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  position_id TEXT NOT NULL,        -- references positions.id (the position NFT address)
+  pool_address TEXT,
+  wallet_address TEXT,
+  event_type TEXT NOT NULL,         -- 'add' | 'remove' | 'claim_fee'
+  signature TEXT NOT NULL,
+  ix_index INTEGER,
+  block_time INTEGER,               -- ms epoch (from Meteora blockTime)
+  token_x_mint TEXT,
+  token_y_mint TEXT,
+  amount_x TEXT,                    -- raw token amounts (string to preserve precision)
+  amount_y TEXT,
+  amount_x_usd REAL,
+  amount_y_usd REAL,
+  total_usd REAL,
+  ingested_at INTEGER DEFAULT (unixepoch()),
+  UNIQUE(position_id, signature, ix_index)
+);
+
 -- Market context snapshots per pool per timestamp (SPEC market_snapshots)
 CREATE TABLE IF NOT EXISTS market_snapshots (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -211,6 +233,7 @@ CREATE INDEX IF NOT EXISTS idx_positions_wallet_entry      ON positions(wallet_a
 CREATE INDEX IF NOT EXISTS idx_market_snapshots_pool_ts    ON market_snapshots(pool_address, timestamp);
 CREATE INDEX IF NOT EXISTS idx_signals_status_created      ON signals(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_signals_trigger_pool_ts     ON signals(triggered_by, pool_address, created_at);
+CREATE INDEX IF NOT EXISTS idx_position_events_pos_time     ON position_events(position_id, block_time);
 CREATE INDEX IF NOT EXISTS idx_wallet_discovery_log_wallet ON wallet_discovery_log(wallet_address);
 CREATE INDEX IF NOT EXISTS idx_training_records_position   ON training_records(position_id);
 

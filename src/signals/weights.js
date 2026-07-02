@@ -28,6 +28,10 @@ const HIGHER_IS_BETTER = new Set([
   "hive_consensus",
 ]);
 
+// Numeric signals where a LOWER value correlates with winning (small-cap upside, calmer
+// price action). Their lift is sign-flipped so a good discriminator still scores positive.
+const LOWER_IS_BETTER = new Set(["mcap", "entry_mcap", "volatility"]);
+
 const BOOLEAN_SIGNALS = new Set(["smart_wallets_present"]);
 const CATEGORICAL_SIGNALS = new Set(["narrative_quality"]);
 
@@ -189,7 +193,12 @@ function computeNumericLift(signal, wins, losses, minSamples) {
   const normalize = (v) => (v - min) / range;
   const winMean = mean(winVals.map(normalize));
   const lossMean = mean(lossVals.map(normalize));
-  return HIGHER_IS_BETTER.has(signal) ? winMean - lossMean : Math.abs(winMean - lossMean);
+  // Sign the lift so that "positive = discriminates wins in the signal's good direction":
+  // higher-is-better wins have higher values; lower-is-better wins have lower values.
+  // Using Math.abs() (the old behaviour) discarded direction and boosted signals purely on
+  // magnitude — amplifying lower-is-better signals even when high values correlated with losses.
+  const diff = winMean - lossMean;
+  return LOWER_IS_BETTER.has(signal) ? -diff : diff;
 }
 
 function computeBooleanLift(signal, wins, losses, minSamples) {

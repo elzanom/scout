@@ -836,7 +836,9 @@ function buildDecisionTraces(performance, lessons) {
 export async function exportLaminarTrainingOutputs({ minPositions = 1 } = {}) {
   const db = getDb();
   const positions = db.prepare(`
-    SELECT p.*, w.score AS wallet_score, w.win_rate AS wallet_win_rate, w.preferred_strategy
+    SELECT p.*, w.score AS wallet_score, w.win_rate AS wallet_win_rate, w.preferred_strategy,
+           (SELECT tr.signal_snapshot FROM training_records tr
+              WHERE tr.position_id = p.id ORDER BY tr.rowid DESC LIMIT 1) AS tr_signal_snapshot
     FROM positions p
     LEFT JOIN wallets w ON w.address = p.wallet_address
     WHERE p.status = 'closed'
@@ -852,7 +854,7 @@ export async function exportLaminarTrainingOutputs({ minPositions = 1 } = {}) {
 
   for (const p of positions) {
     const snap = p.entry_timestamp ? getNearestSnapshot(p.pool_address, p.entry_timestamp) : null;
-    const ss = parseSignalSnapshot(p.signal_snapshot);
+    const ss = parseSignalSnapshot(p.tr_signal_snapshot);
     const wallet = { score: p.wallet_score, win_rate: p.wallet_win_rate, preferred_strategy: p.preferred_strategy };
     const perf = buildPerformanceEntry(p, snap, ss, wallet);
     performance.push(perf);

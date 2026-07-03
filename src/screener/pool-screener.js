@@ -141,7 +141,7 @@ export function getRawPoolScreeningRejectReason(pool, s = config.screening) {
   if (s.maxTvl != null && tvl > s.maxTvl) return `TVL ${tvl} above maxTvl ${s.maxTvl}`;
   if (binStep == null || binStep < s.minBinStep) return `bin_step ${binStep ?? "unknown"} below minBinStep ${s.minBinStep}`;
   if (binStep > s.maxBinStep) return `bin_step ${binStep} above maxBinStep ${s.maxBinStep}`;
-  if (!isUsableVolatility(volatility)) return `volatility ${volatility ?? "unknown"} unusable`;
+  if (s.requireVolatility !== false && !isUsableVolatility(volatility)) return `volatility ${volatility ?? "unknown"} unusable`;
   if (feeActiveTvlRatio == null || feeActiveTvlRatio < s.minFeeActiveTvlRatio) {
     return `fee/active-TVL ${feeActiveTvlRatio ?? "unknown"} below minFeeActiveTvlRatio ${s.minFeeActiveTvlRatio}`;
   }

@@ -55,6 +55,7 @@ const DEFAULTS_FLAT = {
   minBinStep: 80,
   maxBinStep: 125,
   minTokenFeesSol: 30,
+  requireVolatility: true, // reject pools with no/zero volatility (new listings); set false to allow
   requireSolPair: true,         // only discover/evaluate pools paired with SOL
   // Pool Screening — discovery-API query + validation extras (mirror meridian config.screening).
   // Not listed in scout-config.example.json, so these defaults apply; overridable via scout-config.json.
@@ -164,6 +165,7 @@ export const config = {
     minBinStep: m.minBinStep,
     maxBinStep: m.maxBinStep,
     minTokenFeesSol: m.minTokenFeesSol,
+    requireVolatility: m.requireVolatility ?? true,
     requireSolPair: m.requireSolPair,
     // discovery-API query + validation extras
     timeframe: m.timeframe,

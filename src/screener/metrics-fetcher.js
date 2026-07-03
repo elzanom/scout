@@ -493,7 +493,12 @@ export async function fetchBirdeyeTradeFlow(mint) {
     if (data) _birdeyeTradeCache.set(mint, { at: Date.now(), data });
     return data;
   } catch (err) {
-    log("birdeye_warn", `trade flow ${mint?.slice(0, 8)}: ${err.message}`);
+    // Birdeye quota-exceeded / circuit-open is expected (the limiter + 6h disable handle it at the
+    // source). Don't log per-token noise for those — the disable/re-enable events are logged once.
+    // Only surface genuine unexpected errors.
+    if (!/quota exceeded|circuit open/i.test(err.message)) {
+      log("birdeye_warn", `trade flow ${mint?.slice(0, 8)}: ${err.message}`);
+    }
     return null;
   }
 }

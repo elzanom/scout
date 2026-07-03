@@ -73,5 +73,7 @@
   "minQuoteOrganic": 40,
   "minMcap": 75000,
   "maxMcap": 20000000,
-  "minHolders": 300
+  "minHolders": 300,
+  "positionEventBackfillEnabled": false,
+  "positionEventBackfillBatch": 5
 }

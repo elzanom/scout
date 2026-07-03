@@ -159,6 +159,36 @@ async function cyclePositionNotifications() {
   log("position_notify", `cycle: ${sent}/${rows.length} closed position(s) notified`);
 }
 
+/**
+ * Background backfill of position-event timelines: sync /positions/{addr}/historical for tracked/top
+ * wallets' CLOSED positions that have no event ledger yet (most recent first). Bounded + paced so
+ * position_events populates over time without on-demand clicks. (syncPositionEvents bypasses the
+ * discovery breaker + is one Meteora call per position, so this is gentle on rate limits.)
+ */
+async function cyclePositionEventBackfill() {
+  const batch = Number(config.signals.positionEventBackfillBatch) || 5;
+  if (batch <= 0) return;
+  const rows = getDb().prepare(
+    `SELECT p.id FROM positions p
+     WHERE p.status = 'closed'
+       AND p.wallet_address IN (SELECT address FROM wallets WHERE is_top_wallet = 1 OR status = 'tracked')
+       AND NOT EXISTS (SELECT 1 FROM position_events pe WHERE pe.position_id = p.id)
+     ORDER BY p.exit_timestamp DESC
+     LIMIT ?`,
+  ).all(batch);
+  if (!rows.length) return;
+  let synced = 0;
+  for (const r of rows) {
+    try {
+      await syncPositionEvents(r.id);
+      synced++;
+    } catch (err) {
+      log("position_events_warn", `backfill ${r.id?.slice(0, 8)}: ${err.message}`);
+    }
+  }
+  log("position_events", `backfill cycle: ${synced}/${rows.length} timeline(s) synced`);
+}
+
 /** Build training records for closed positions that don't have one yet; auto-export if configured. */
 function buildMissingRecords() {
   const closed = getDb()
@@ -279,6 +309,12 @@ async function boot() {
     log("startup", `Position-close alerts enabled (window=${config.signals.positionNotifyWindowHours}h, batch=${config.signals.positionNotifyBatch})`);
   } else {
     log("startup", "Position-close notifications disabled");
+  }
+  if (config.signals.positionEventBackfillEnabled) {
+    cron.schedule(everyNMin(10), () => runSafe("position_events", cyclePositionEventBackfill));
+    log("startup", `Position-event backfill enabled (batch=${config.signals.positionEventBackfillBatch}/cycle)`);
+  } else {
+    log("startup", "Position-event backfill disabled");
   }
   cron.schedule("0 0 * * *", () => runSafe("signal_weights", () => recalculateWeights(config.signalWeights || {}))); // daily Darwinian recalc
   cron.schedule("0 9 * * *", () => runSafe("daily_summary", sendDailySummary)); // daily Telegram summary at 09:00

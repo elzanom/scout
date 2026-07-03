@@ -84,6 +84,11 @@ const DEFAULTS_FLAT = {
   positionNotifyEnabled: false,
   positionNotifyWindowHours: 2, // only alert on closes within this recent window (bounds backfill spam)
   positionNotifyBatch: 5,       // max alerts per cycle
+  // Background position-event timeline backfill (populate position_events for tracked wallets'
+  // closed positions without an event ledger yet — so the dashboard/position detail has timelines
+  // without on-demand clicks). Bounded + paced (one Meteora /positions/{addr}/historical per pos).
+  positionEventBackfillEnabled: false,
+  positionEventBackfillBatch: 5,
   // Collection
   backfillDays: 30,
   snapshotIntervalMinutes: 15,
@@ -190,6 +195,8 @@ export const config = {
     positionNotifyEnabled: m.positionNotifyEnabled ?? false,
     positionNotifyWindowHours: m.positionNotifyWindowHours ?? 2,
     positionNotifyBatch: m.positionNotifyBatch ?? 5,
+    positionEventBackfillEnabled: m.positionEventBackfillEnabled ?? false,
+    positionEventBackfillBatch: m.positionEventBackfillBatch ?? 5,
   },
   collection: {
     backfillDays: m.backfillDays,

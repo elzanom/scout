@@ -37,6 +37,12 @@ function isBirdeyeDisabled() {
   return true;
 }
 
+/** Birdeye is unavailable (quota-disabled OR circuit open). Callers should skip silently — no point
+ *  attempting (withBirdeyeLimit would throw) and logging per-token noise during the pause. */
+function birdeyeUnavailable() {
+  return isBirdeyeDisabled() || (birdeyeCircuitOpen && Date.now() < birdeyeCircuitUntil);
+}
+
 async function withBirdeyeLimit(fn) {
   while (birdeyeInFlight >= BIRDEYE_MAX_IN_FLIGHT) await sleep(BIRDEYE_DISPATCH_DELAY_MS);
   if (isBirdeyeDisabled()) {
@@ -451,7 +457,7 @@ export async function getSolPriceUsd() {
 const _birdeyeTradeCache = new Map();
 const _BIRDEYE_TRADE_TTL_MS = 15 * 60 * 1000; // 15min cache to reduce 429 pressure
 export async function fetchBirdeyeTradeFlow(mint) {
-  if (!mint || !config.env.birdeyeApiKey) return null;
+  if (!mint || !config.env.birdeyeApiKey || birdeyeUnavailable()) return null;
   const cached = _birdeyeTradeCache.get(mint);
   if (cached && Date.now() - cached.at < _BIRDEYE_TRADE_TTL_MS) return cached.data;
   try {

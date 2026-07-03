@@ -25,6 +25,11 @@ const DEFAULTS_FLAT = {
   minPositionsToEvaluate: 10,
   evaluationBackfillDays: 30,
   reEvaluateIntervalHours: 168,
+  // Sequential per-pool flow pacing + bounds (avoid rate limits):
+  perPoolTelegramReport: false, // per-pool Telegram reports (flow itself is always sequential)
+  evalPacingMs: 2000, // sleep between wallet evaluations
+  maxWalletEvalsPerCycle: 30, // global per-cycle wallet-eval budget (safety cap)
+  backlogBatchPerCycle: 10, // small paced candidate drain after pools (0 = disable)
   // Established-pool discovery pass (where elite LPs sit — high TVL/blue-chip pools the
   // trending screener excludes). Runs in addition to the trending pass.
   establishedEnabled: true,
@@ -131,6 +136,10 @@ export const config = {
     minPositionsToEvaluate: m.minPositionsToEvaluate,
     evaluationBackfillDays: m.evaluationBackfillDays,
     reEvaluateIntervalHours: m.reEvaluateIntervalHours,
+    perPoolTelegramReport: m.perPoolTelegramReport ?? false,
+    evalPacingMs: m.evalPacingMs,
+    maxWalletEvalsPerCycle: m.maxWalletEvalsPerCycle,
+    backlogBatchPerCycle: m.backlogBatchPerCycle,
     establishedEnabled: m.establishedEnabled,
     establishedMinTvl: m.establishedMinTvl,
     establishedMaxTvl: m.establishedMaxTvl,

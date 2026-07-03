@@ -66,5 +66,8 @@
   "seedWalletsOnStartup": false,
   "positionNotifyEnabled": false,
   "positionNotifyWindowHours": 2,
-  "positionNotifyBatch": 5
+  "positionNotifyBatch": 5,
+  "evalPacingMs": 2000,
+  "maxWalletEvalsPerCycle": 30,
+  "backlogBatchPerCycle": 10
 }

@@ -3,9 +3,6 @@ import cron from "node-cron";
 import { config } from "../config/config.js";
 import { log, logAction, setLogBroadcaster } from "./utils/logger.js";
 import { initDb, getDb, closeDb } from "./db/index.js";
-import { runPoolDiscovery } from "./discovery/pool-discovery.js";
-import { runEvaluatorBatch } from "./discovery/wallet-evaluator.js";
-import { runFollowWinners } from "./discovery/follow-winners.js";
 import { makeTxMiningHandler } from "./discovery/tx-mining.js";
 import { discoverPools } from "./screener/pool-screener.js";
 import { collectPoolSnapshot } from "./collector/snapshots.js";
@@ -23,7 +20,7 @@ import { fetchWalletPortfolio } from "./screener/metrics-fetcher.js";
 import { mountWebui, startWebuiServer } from "./webui-server.js";
 import { broadcastState, broadcastCycle, broadcastLog } from "./webui/ws-broadcaster.js";
 import { touchCycle } from "./webui/state-cache.js";
-import { startPolling, notifyError, notifyPools, notifyWallets, notifyPerformance, notifyPoolStudy, notifyPoolWalletDiscovery, notifyPosition, isEnabled as telegramEnabled } from "./notifier/telegram.js";
+import { startPolling, notifyError, notifyPerformance, notifyPoolStudy, notifyPoolWalletDiscovery, notifyPosition, isEnabled as telegramEnabled } from "./notifier/telegram.js";
 import { syncPositionEvents, decodePositionBinRange } from "./collector/position-history.js";
 import { getPositionEvents, getPnlFromEvents } from "./db/position-events.js";
 import { runPerPoolDiscoveryEval } from "./discovery/per-pool-pipeline.js";
@@ -33,44 +30,22 @@ import { writeSmartWalletFeed } from "./laminar-feed/smart-wallet-feed.js";
 
 // ─── cycles ────────────────────────────────────────────────────────────────────
 
-const PER_POOL_MODE = process.env.PER_POOL_TELEGRAM_REPORT === "1" || config.discovery.perPoolTelegramReport;
-
-/** Discovery → follow-winners → evaluate → build dataset records for newly-closed positions → promote top.
- *  Telegram reports are sent after each milestone so the operator sees pool → wallet → performance. */
-async function cycleDiscoveryEval({ poolLimit = 10, evalLimit, followTopLimit = 20 } = {}) {
-  if (PER_POOL_MODE) {
-    await runPerPoolDiscoveryEval(
-      {
-        notifyPool: (r) => notifyPoolStudy(r),
-        notifyWalletDiscovery: (r) => notifyPoolWalletDiscovery(r),
-        notifyPerformance: (r) => notifyPerformance({ pool: r.pool, name: r.name, details: r.details }),
-      },
-      { poolLimit, ownerLimit: 20, evalLimitPerPool: 20, followTopLimit },
-    );
-    return;
-  }
-
-  const discovery = await runPoolDiscovery({ poolLimit });
-  notifyPools({
-    pass: discovery.passed_pools,
-    studied: discovery.studied_pools?.length,
-    newCandidates: discovery.new_candidates,
-    errors: discovery.errors,
-  }).catch((e) => log("telegram_warn", `pool report failed: ${e.message}`));
-  if (discovery.new_wallets?.length) {
-    notifyWallets({ newWallets: discovery.new_wallets, source: "pool_discovery" }).catch((e) =>
-      log("telegram_warn", `wallet discovery report failed: ${e.message}`));
-  }
-
-  await runFollowWinners({ topLimit: followTopLimit });
-  const evalResult = await runEvaluatorBatch({ limit: evalLimit });
-  if (evalResult.performanceDetails?.length) {
-    notifyPerformance({ summary: evalResult.summary, details: evalResult.performanceDetails }).catch((e) =>
-      log("telegram_warn", `performance report failed: ${e.message}`));
-  }
-
-  buildMissingRecords();
-  runRankingCycle();
+/** Canonical discovery→evaluation flow: always sequential per-pool → per-wallet. Pacing
+ *  (evalPacingMs) + the per-cycle budget (maxWalletEvalsPerCycle) live inside
+ *  runPerPoolDiscoveryEval. Per-pool Telegram reports are opt-in via
+ *  config.discovery.perPoolTelegramReport; otherwise the flow runs silently (state still
+ *  visible on the dashboard + /status). */
+async function cycleDiscoveryEval({ poolLimit = 10, followTopLimit = 20 } = {}) {
+  const report = config.discovery.perPoolTelegramReport;
+  const noop = async () => {};
+  await runPerPoolDiscoveryEval(
+    {
+      notifyPool: report ? (r) => notifyPoolStudy(r) : noop,
+      notifyWalletDiscovery: report ? (r) => notifyPoolWalletDiscovery(r) : noop,
+      notifyPerformance: report ? (r) => notifyPerformance({ pool: r.pool, name: r.name, details: r.details }) : noop,
+    },
+    { poolLimit, ownerLimit: 20, evalLimitPerPool: 20, followTopLimit },
+  );
 }
 
 /** Refresh the screened-pools cache (used by the signal validator's on-demand checks). */
@@ -242,7 +217,7 @@ async function boot() {
   // SCOUT_RUN_ONCE: run every cycle once (bounded) then exit — used for verification/smoke.
   if (process.env.SCOUT_RUN_ONCE === "1") {
     log("startup", "SCOUT_RUN_ONCE: running all cycles once (bounded), then exiting");
-    await runSafe("discovery_eval", () => cycleDiscoveryEval({ poolLimit: 3, evalLimit: 5, followTopLimit: 3 }));
+    await runSafe("discovery_eval", () => cycleDiscoveryEval({ poolLimit: 3, followTopLimit: 3 }));
     await runSafe("screening", () => cycleScreening());
     await runSafe("snapshots", () => cycleSnapshots({ poolLimit: 10 }));
     await runSafe("token_info", () => cycleTokenInfo({ limit: 5 }));

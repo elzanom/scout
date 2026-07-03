@@ -1,11 +1,11 @@
 import { config } from "../../config/config.js";
 import { log } from "../utils/logger.js";
+import { sleep } from "../utils/retry.js";
 import { discoverPools } from "../screener/pool-screener.js";
-import { studyTopLPers, runConcurrent } from "./pool-discovery.js";
+import { studyTopLPers } from "./pool-discovery.js";
 import { evaluateWallet } from "./wallet-evaluator.js";
-import { upsertWallet, logDiscovery } from "../db/wallets.js";
+import { upsertWallet, logDiscovery, getWallet, listWallets } from "../db/wallets.js";
 import { runFollowWinners } from "./follow-winners.js";
-import { runEvaluatorBatch } from "./wallet-evaluator.js";
 import { buildRecord } from "../dataset/record-builder.js";
 import { exportDataset } from "../dataset/exporter.js";
 import { runRankingCycle } from "../wallets/wallet-filter.js";
@@ -36,9 +36,45 @@ export async function runPerPoolDiscoveryEval(deps, { poolLimit = 10, ownerLimit
   const allNewWallets = new Set();
   const allEvalResults = [];
 
-  // Deduplication state for this cycle.
+  // ── Rate-limit bounds: pace between wallets + cap the total per cycle ──
+  const maxEvals = Number(config.discovery.maxWalletEvalsPerCycle) || 30;
+  const pacingMs = Number(config.discovery.evalPacingMs) || 0;
+  const reevalCutoff = Math.floor(Date.now() / 1000)
+    - (Number(config.discovery.reEvaluateIntervalHours) || 168) * 3600;
+  let evalsThisCycle = 0;
+  let budgetHit = false;
+
+  // Per-cycle deduplication state.
   const evaluatedThisCycle = new Set();
   const seenDataSignatures = new Map(); // signature -> first wallet address with this fingerprint
+
+  /** Whether a wallet should be (re)evaluated: candidates always; tracked/top only if stale. */
+  const shouldEvaluate = (address) => {
+    const w = getWallet(address);
+    if (!w) return true; // unknown → treat as fresh
+    if (w.status === "candidate") return true;
+    if ((w.status === "tracked" || w.status === "top")
+      && (w.last_evaluated == null || w.last_evaluated < reevalCutoff)) return true;
+    return false;
+  };
+
+  /** Evaluate one wallet with budget check, dedup, pacing. Returns result|null (null = skipped/budget). */
+  const evalOne = async (address) => {
+    if (budgetHit || evalsThisCycle >= maxEvals) { budgetHit = true; return null; }
+    if (evaluatedThisCycle.has(address)) return null;
+    evaluatedThisCycle.add(address);
+    let result;
+    try {
+      result = await evaluateWallet(address);
+      allEvalResults.push(result);
+    } catch (err) {
+      log("eval_error", `evaluate ${address?.slice(0, 8)}: ${err.message}`);
+      return { address, status: "error", error: err.message };
+    }
+    evalsThisCycle++;
+    if (pacingMs > 0) await sleep(pacingMs);
+    return result;
+  };
 
   const passes = [{ name: "trending", screening: undefined, limit: poolLimit }];
   if (config.discovery.establishedEnabled) {
@@ -54,6 +90,7 @@ export async function runPerPoolDiscoveryEval(deps, { poolLimit = 10, ownerLimit
   }
 
   for (const pass of passes) {
+    if (budgetHit) break;
     let pools = [];
     try {
       const r = await discoverPools({ page_size: Math.max(pass.limit, 20), screening: pass.screening });
@@ -63,9 +100,10 @@ export async function runPerPoolDiscoveryEval(deps, { poolLimit = 10, ownerLimit
       log("discovery_warn", `${pass.name} discoverPools failed: ${err.message}`);
       continue;
     }
-    log("discovery", `${pass.name} pass: ${pools.length} pool(s) to study sequentially`);
+    log("discovery", `${pass.name} pass: ${pools.length} pool(s) to process sequentially (budget ${maxEvals}, pace ${pacingMs}ms)`);
 
     for (const pool of pools) {
+      if (budgetHit) break;
       const poolReport = {
         pool: pool.pool,
         name: pool.name,
@@ -89,8 +127,7 @@ export async function runPerPoolDiscoveryEval(deps, { poolLimit = 10, ownerLimit
       }
 
       // Insert candidates. Skip wallets whose raw on-chain footprint is identical to one
-      // already processed in this cycle (same aggregate = same data). They provide no new
-      // signal and repeatedly hammer Agent Meridian / Meteora endpoints.
+      // already processed in this cycle (same aggregate = same data).
       for (const owner of studied.owners) {
         if (!owner.address) continue;
         const sig = ownerDataSignature(owner);
@@ -123,43 +160,34 @@ export async function runPerPoolDiscoveryEval(deps, { poolLimit = 10, ownerLimit
         }).catch((e) => log("telegram_warn", `wallet discovery report failed: ${e.message}`));
       }
 
-      // Evaluate wallets sequentially (max evalLimitPerPool). Skip wallets already evaluated
-      // in this cycle (can appear across multiple pools) and those with duplicate fingerprints.
-      const toEvaluate = studied.owners
-        .map((o) => o.address)
-        .filter(Boolean)
-        .filter((addr) => {
-          if (evaluatedThisCycle.has(addr)) {
-            log("discovery", `skip ${addr.slice(0, 8)}… already evaluated in this cycle`);
-            return false;
-          }
-          evaluatedThisCycle.add(addr);
-          return true;
-        })
-        .slice(0, evalLimitPerPool);
+      // Evaluate this pool's wallets sequentially, candidates-first. Decided wallets are skipped
+      // unless stale, so each pool only does the heavy eval on wallets that need deciding.
       const performanceDetails = [];
-      for (const address of toEvaluate) {
-        try {
-          const result = await evaluateWallet(address);
-          allEvalResults.push(result);
-          if (result?.metrics) {
-            performanceDetails.push({
-              address,
-              status: result.status,
-              score: result.score ?? result.metrics?.score ?? 0,
-              win_rate: result.metrics?.win_rate ?? 0,
-              positions: result.metrics?.total_positions ?? 0,
-              fee_yield: result.metrics?.avg_fee_yield ?? 0,
-              pnl_usd: result.metrics?.total_pnl_usd ?? 0,
-              reject_reason: result.reject_reason || null,
-            });
-          }
-        } catch (err) {
-          log("eval_error", `per-pool evaluate ${address?.slice(0, 8)}: ${err.message}`);
-          performanceDetails.push({ address, status: "error", error: err.message });
+      let evaluatedInPool = 0;
+      for (const owner of studied.owners) {
+        if (!owner.address || budgetHit) break;
+        if (evaluatedInPool >= evalLimitPerPool) break;
+        if (!shouldEvaluate(owner.address)) continue;
+        const result = await evalOne(owner.address);
+        if (!result) { if (budgetHit) break; continue; }
+        evaluatedInPool++;
+        if (result.metrics) {
+          performanceDetails.push({
+            address: owner.address,
+            status: result.status,
+            score: result.score ?? result.metrics?.score ?? 0,
+            win_rate: result.metrics?.win_rate ?? 0,
+            positions: result.metrics?.total_positions ?? 0,
+            fee_yield: result.metrics?.avg_fee_yield ?? 0,
+            pnl_usd: result.metrics?.total_pnl_usd ?? 0,
+            reject_reason: result.reject_reason || null,
+          });
+        } else if (result.status === "error") {
+          performanceDetails.push({ address: owner.address, status: "error", error: result.error });
         }
       }
 
+      if (budgetHit) log("discovery", `budget hit (${evalsThisCycle}/${maxEvals}) — pausing after pool ${pool.name || pool.pool?.slice(0, 8)}`);
       if (performanceDetails.length && notifyPerformance) {
         await notifyPerformance({
           pool: pool.pool,
@@ -170,15 +198,25 @@ export async function runPerPoolDiscoveryEval(deps, { poolLimit = 10, ownerLimit
     }
   }
 
-  // Follow winners + ranking still run once at the end.
+  log("discovery", `pool pass complete: ${evalsThisCycle} wallet(s) evaluated${budgetHit ? " (budget-capped)" : ""}`);
+
+  // Follow winners still runs once at the end.
   await runFollowWinners({ topLimit: followTopLimit });
 
-  // Evaluate the queued candidate backlog so newly inserted wallets are promoted/rejected
-  // instead of accumulating forever. This keeps performance reports varying cycle-to-cycle.
-  const evalLimit = config.discovery.maxWalletCandidatesPerCycle ?? 100;
-  const batch = await runEvaluatorBatch({ limit: evalLimit });
-  if (batch?.summary) {
-    log("eval", `per-pool pipeline candidate batch: ${batch.evaluated} → ${JSON.stringify(batch.summary)}`);
+  // Small paced candidate-backlog drain (replaces the old flat runEvaluatorBatch(100) tail).
+  // Covers candidates from follow-winners/tx-mining that aren't in this cycle's pools.
+  const backlogBatch = Number(config.discovery.backlogBatchPerCycle) ?? 10;
+  if (backlogBatch > 0 && !budgetHit) {
+    const backlog = listWallets({ status: "candidate", limit: backlogBatch })
+      .map((w) => w.address)
+      .filter((a) => a && !evaluatedThisCycle.has(a));
+    let drained = 0;
+    for (const address of backlog) {
+      const r = await evalOne(address);
+      if (r) drained++;
+      else if (budgetHit) break;
+    }
+    if (drained) log("eval", `backlog drain: ${drained} candidate(s) (paced, ${evalsThisCycle}/${maxEvals} total)`);
   }
 
   buildMissingRecords();
@@ -187,7 +225,9 @@ export async function runPerPoolDiscoveryEval(deps, { poolLimit = 10, ownerLimit
   return {
     passed_pools: allPassedPools,
     new_wallets: [...allNewWallets],
-    evaluated: allEvalResults.length + (batch?.evaluated || 0),
+    evaluated: allEvalResults.length,
+    evals_this_cycle: evalsThisCycle,
+    budget_hit: budgetHit,
   };
 }
 

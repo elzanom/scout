@@ -29,6 +29,27 @@ function getDbSafe() {
   try { return getDb(); } catch { return null; }
 }
 
+// Read only the last ~512KB of a log file (bounded) instead of readFileSync on the whole file,
+// which can be hundreds of MB on a busy day and block the event loop / blow memory.
+const LOG_TAIL_BYTES = 512 * 1024;
+function readLogTail(logFile) {
+  let stat;
+  try { stat = fs.statSync(logFile); } catch { return []; }
+  if (!stat.isFile() || stat.size === 0) return [];
+  const start = Math.max(0, stat.size - LOG_TAIL_BYTES);
+  const fd = fs.openSync(logFile, "r");
+  try {
+    const len = stat.size - start;
+    const buf = Buffer.allocUnsafe(len);
+    fs.readSync(fd, buf, 0, len, start);
+    let text = buf.toString("utf8");
+    if (start > 0) text = text.slice(text.indexOf("\n") + 1); // drop the partial first line
+    return text.trim().split("\n").filter(Boolean);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function parseQuery(url) {
   const q = {};
   for (const [k, v] of url.searchParams) q[k] = v;
@@ -160,8 +181,7 @@ export async function handleApi(req, res) {
         const level = q.level;
         const today = new Date().toISOString().split("T")[0];
         const logFile = repoPath("logs", `scout-${today}.log`);
-        if (!fs.existsSync(logFile)) return json(res, { logs: [] });
-        let tail = fs.readFileSync(logFile, "utf8").trim().split("\n").filter(Boolean);
+        let tail = readLogTail(logFile);
         if (level) tail = tail.filter((l) => l.includes(`[${level.toUpperCase()}]`));
         const parsed = tail.slice(-lines).map((line) => {
           const m = line.match(/^\[(.+?)\] \[(.+?)\] (.+)$/);

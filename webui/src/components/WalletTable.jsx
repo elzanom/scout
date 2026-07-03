@@ -3,6 +3,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { fmtNumber, fmtPct, fmtUsd } from '../lib/format';
 import AddressCell from './AddressCell';
 import SearchFilter from './SearchFilter';
+import WalletDetail from './WalletDetail';
 
 const STATUS_TABS = [
   { key: 'all', label: 'All' },
@@ -34,6 +35,7 @@ export default function WalletTable({ wallets }) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [sort, setSort] = useState({ key: 'score', dir: 'desc' });
+  const [selected, setSelected] = useState(null);
 
   if (!wallets?.length) return <div className="panel panel-body">No wallets</div>;
 
@@ -91,6 +93,7 @@ export default function WalletTable({ wallets }) {
   };
 
   return (
+    <>
     <SearchFilter items={sorted} keys={keys}>
       {(filtered, query, setQuery) => {
         const total = filtered.length;
@@ -149,7 +152,7 @@ export default function WalletTable({ wallets }) {
               </thead>
               <tbody>
                 {paged.map((w, i) => (
-                  <tr key={w.address}>
+                  <tr key={w.address} onClick={() => setSelected(w.address)} style={{ cursor: 'pointer', background: selected === w.address ? 'rgba(0,229,255,0.08)' : undefined }}>
                     <td className="dim">{start + i + 1}</td>
                     <td><AddressCell address={w.address} type="wallet" head={10} tail={6} showLink={false} /></td>
                     <td><span className={`badge badge-${w.status}`}>{w.status}</span></td>
@@ -187,5 +190,7 @@ export default function WalletTable({ wallets }) {
         );
       }}
     </SearchFilter>
+    {selected && <WalletDetail walletAddress={selected} onClose={() => setSelected(null)} />}
+    </>
   );
 }

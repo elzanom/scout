@@ -115,6 +115,27 @@ export async function handleApi(req, res) {
     return json(res, { position, events, summary, decoded });
   }
 
+  // Wallet detail: /api/wallets/<address> — parameterized path handled before the switch (the
+  // switch's exact-match detail case is unreachable for parameterized paths). Returns the wallet
+  // row + its positions + its signals + discovery log.
+  if (url.pathname.startsWith("/api/wallets/")) {
+    const segments = url.pathname.split("/").filter(Boolean);
+    const address = decodeURIComponent(segments[2] || ""); // ["api","wallets","<addr>"]
+    if (!address) return notFound(res);
+    const wallet = db.prepare("SELECT * FROM wallets WHERE address = ?").get(address);
+    if (!wallet) return notFound(res);
+    const positions = db.prepare(
+      "SELECT * FROM positions WHERE wallet_address = ? ORDER BY entry_timestamp DESC LIMIT 100",
+    ).all(address).map((p) => ({ ...p, token_pair: formatTokenPair(p) }));
+    const signals = db.prepare(
+      "SELECT pool_address, token_pair, combined_confidence, status, created_at FROM signals WHERE triggered_by = ? ORDER BY created_at DESC LIMIT 20",
+    ).all(address);
+    const discovery = db.prepare(
+      "SELECT * FROM wallet_discovery_log WHERE wallet_address = ? ORDER BY discovered_at DESC LIMIT 20",
+    ).all(address);
+    return json(res, { wallet, positions, signals, discovery_log: discovery });
+  }
+
   try {
     switch (url.pathname) {
       case "/api/health":
@@ -134,19 +155,8 @@ export async function handleApi(req, res) {
         return json(res, { wallets: db.prepare(sql).all(params) });
       }
 
-      case "/api/wallets/":
-      case "/api/wallets": {
-        const segments = url.pathname.split("/").filter(Boolean);
-        if (segments.length === 2) {
-          const address = segments[1];
-          const wallet = db.prepare("SELECT * FROM wallets WHERE address = ?").get(address);
-          if (!wallet) return notFound(res);
-          const positions = db.prepare("SELECT * FROM positions WHERE wallet_address = ? ORDER BY entry_timestamp DESC LIMIT 100").all(address).map((p) => ({ ...p, token_pair: formatTokenPair(p), token_pair_raw: p.token_pair }));
-          const discovery = db.prepare("SELECT * FROM wallet_discovery_log WHERE wallet_address = ? ORDER BY discovered_at DESC LIMIT 50").all(address);
-          return json(res, { wallet, positions, discovery_log: discovery });
-        }
-        break;
-      }
+      // (wallet detail "/api/wallets/<addr>" is handled by the prefix route above the switch)
+
 
       case "/api/positions": {
         const { limit, offset } = limitOffset(q);

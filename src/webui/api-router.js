@@ -1,4 +1,5 @@
 import fs from "fs";
+import crypto from "crypto";
 import path from "path";
 import { ZipArchive } from "archiver";
 import { getDb } from "../db/index.js";
@@ -48,6 +49,21 @@ function readLogTail(logFile) {
   } finally {
     fs.closeSync(fd);
   }
+}
+
+// DASHBOARD_SECRET gate (header-only, constant-time). When no secret is configured → allow (dev
+// mode). Header-only (never query param) so the secret isn't logged in URLs/browser history.
+function requireDashSecret(req) {
+  const secret = process.env.DASHBOARD_SECRET || "";
+  if (!secret) return true;
+  const provided = req.headers["x-dashboard-secret"];
+  if (!provided) return false;
+  const a = Buffer.from(String(provided));
+  const b = Buffer.from(secret);
+  const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
+  a.fill(0);
+  b.fill(0);
+  return ok;
 }
 
 function parseQuery(url) {
@@ -177,13 +193,8 @@ export async function handleApi(req, res) {
       }
 
       case "/api/logs": {
-        // Logs contain wallet addresses + system state; the dashboard is bound to 0.0.0.0 and often
-        // Cloudflare-tunneled, so require DASHBOARD_SECRET when it's configured (mirrors /restart).
-        const dashSecret = process.env.DASHBOARD_SECRET || "";
-        if (dashSecret) {
-          const provided = req.headers["x-dashboard-secret"] || q.secret;
-          if (provided !== dashSecret) return json(res, { error: "unauthorized" }, 401);
-        }
+        if (req.method !== "GET") return json(res, { error: "method not allowed" }, 405);
+        if (!requireDashSecret(req)) return json(res, { error: "unauthorized" }, 401);
         const lines = Math.min(parseInt(q.lines, 10) || 100, 500);
         const level = q.level;
         const today = new Date().toISOString().split("T")[0];
@@ -199,11 +210,7 @@ export async function handleApi(req, res) {
 
       case "/api/control/restart": {
         if (req.method !== "POST") return json(res, { error: "method not allowed" }, 405);
-        const secret = process.env.DASHBOARD_SECRET || "";
-        if (secret) {
-          const provided = req.headers["x-dashboard-secret"] || q.secret;
-          if (provided !== secret) return json(res, { error: "unauthorized" }, 401);
-        }
+        if (!requireDashSecret(req)) return json(res, { error: "unauthorized" }, 401);
         setTimeout(() => {
           process.emit("SIGTERM");
         }, 100);

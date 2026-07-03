@@ -189,7 +189,17 @@ async function cycleLaminarExport() {
 // ─── scheduling helpers ─────────────────────────────────────────────────────────
 const everyNMin = (n) => `*/${Math.max(1, Math.floor(n))} * * * *`;
 
+// Per-cycle reentrancy guard: the paced discovery flow can run longer than its 15m cron interval,
+// so a second tick must skip an already-running cycle instead of overlapping (concurrent DB writes,
+// double API load). Each cycle name is independent.
+const runningCycles = new Set();
+
 async function runSafe(name, fn) {
+  if (runningCycles.has(name)) {
+    log("cron_skip", `${name} already running — skipping this tick`);
+    return;
+  }
+  runningCycles.add(name);
   const t0 = Date.now();
   const startedAt = Math.floor(t0 / 1000);
   touchCycle(name);
@@ -206,6 +216,8 @@ async function runSafe(name, fn) {
     logAction({ tool: name, success: false, duration_ms: durationMs, result: { error: err.message } });
     broadcastCycle(name, startedAt, durationMs, false);
     notifyError(`cycle ${name}`, err).catch((e) => log("telegram_warn", `alert failed: ${e.message}`));
+  } finally {
+    runningCycles.delete(name);
   }
 }
 

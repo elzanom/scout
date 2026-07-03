@@ -47,7 +47,7 @@ export function exportDataset({ format, path: outPath } = {}) {
     const escape = (v) => {
       if (v == null) return "";
       const s = String(v);
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const header = ALL_COLS.join(",");
     const lines = records.map((r) => ALL_COLS.map((c) => escape(r[c])).join(","));

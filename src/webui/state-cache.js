@@ -46,8 +46,20 @@ export function getStateCache() {
   };
 }
 
+// Map cycle names (as passed to runSafe) → the cache keys the dashboard reads. Without this,
+// names like "discovery_eval"/"signal_scan"/"token_info" produced orphan keys (lastDiscovery_evalAt)
+// and the dashboard "Cycle Status" never updated.
+const CYCLE_KEY = {
+  discovery_eval: "lastDiscoveryAt",
+  screening: "lastScreeningAt",
+  snapshots: "lastSnapshotAt",
+  ranking: "lastRankingAt",
+  signal_scan: "lastSignalAt",
+  token_info: "lastTokenInfoAt",
+};
+
 export function touchCycle(name) {
-  const key = `last${name.charAt(0).toUpperCase()}${name.slice(1)}At`;
+  const key = CYCLE_KEY[name] || `last${name.charAt(0).toUpperCase()}${name.slice(1)}At`;
   cache[key] = Math.floor(Date.now() / 1000);
 }
 

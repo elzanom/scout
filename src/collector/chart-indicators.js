@@ -24,22 +24,34 @@ const TIMEFRAME_SECONDS = {
   "1d": 24 * 60 * 60,
 };
 
-function rsi14(prices) {
-  if (!Array.isArray(prices) || prices.length < 15) return null;
-  const slice = prices.slice(-15);
-  let gains = 0;
-  let losses = 0;
-  for (let i = 1; i < slice.length; i++) {
-    const diff = slice[i] - slice[i - 1];
-    if (diff >= 0) gains += diff;
-    else losses -= diff;
+// Wilder RSI(14): seed with the simple mean of the first 14 deltas, then Wilder-smooth across the
+// rest of the series. (The previous impl only used the last 15 closes — simple average, not Wilder.)
+function rsi14(closes) {
+  if (!Array.isArray(closes) || closes.length < 15) return null;
+  let gain = 0;
+  let loss = 0;
+  for (let i = 1; i <= 14; i++) {
+    const d = closes[i] - closes[i - 1];
+    if (d >= 0) gain += d;
+    else loss -= d;
   }
-  if (gains + losses === 0) return 50;
-  const rs = gains / Math.max(1e-9, losses);
-  const rsi = 100 - 100 / (1 + rs);
-  return Number(rsi.toFixed(2));
+  let avgGain = gain / 14;
+  let avgLoss = loss / 14;
+  for (let i = 15; i < closes.length; i++) {
+    const d = closes[i] - closes[i - 1];
+    avgGain = (avgGain * 13 + Math.max(0, d)) / 14;
+    avgLoss = (avgLoss * 13 + Math.max(0, -d)) / 14;
+  }
+  if (avgGain === 0 && avgLoss === 0) return 50; // no movement → neutral
+  if (avgLoss === 0) return 100; // gains, no losses
+  if (avgGain === 0) return 0;  // losses, no gains
+  const rs = avgGain / avgLoss;
+  return Number((100 - 100 / (1 + rs)).toFixed(2));
 }
 
+// NOTE: real Supertrend needs True Range (high/low/prev-close); snapshots only have close prices
+// (see file header). This is a coherent trend PROXY, not a true Supertrend: signal = price vs the
+// period mid (hl2 of closes). The previous band-containment test was inverted noise.
 function supertrendSignal(prices, period = 10, multiplier = 3) {
   if (!Array.isArray(prices) || prices.length < period) return null;
   const slice = prices.slice(-period);
@@ -48,10 +60,8 @@ function supertrendSignal(prices, period = 10, multiplier = 3) {
     return acc + Math.abs(p - slice[i - 1]);
   }, 0) / Math.max(1, slice.length - 1);
   const hl2 = (Math.max(...slice) + Math.min(...slice)) / 2;
-  const upperBand = hl2 + multiplier * atr;
-  const lowerBand = hl2 - multiplier * atr;
   const last = slice[slice.length - 1];
-  const signal = last > lowerBand && last < upperBand ? "up" : "down";
+  const signal = last >= hl2 ? "up" : "down";
   return { signal, value: Number(hl2.toFixed(6)) };
 }
 

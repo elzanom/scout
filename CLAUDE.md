@@ -196,14 +196,28 @@ Signal ditulis ke `signals-output.json` (default). Format harus persis seperti d
 
 ---
 
+## Catatan Engineering & Gotchas
+
+- **PM2**: `npm run pm2:start` (bukan `restart`) kalau PM2 kehilangan proses (daemon reset → "not found"). `restart` cuma jalan kalau proses masih terdaftar.
+- **Config knob baru**: tambah di `DEFAULTS_FLAT` + mapping `config.{discovery|screening|tiers|signals|...}` di `config/config.js`, lalu **kedua** `scout-config.json` (live, gitignored) DAN `config/scout-config.example.json` (template, tracked). Restart PM2 untuk apply.
+- **`scout-config.json` di-gitignore** (config live lokal); hanya `scout-config.example.json` yang di-commit.
+- **Schema migrasi kolom aditif**: append ke array `*_COLS` di `src/db/schema.js` (runMigrations ALTER). Index di kolom MIGRATED harus `CREATE INDEX` di **dalam `runMigrations`** setelah ALTER — kalau di DDL index-block gagal ("no such column").
+- **Smoke test**: `SCOUT_RUN_ONCE=1 node src/index.js` jalanin semua cycle sekali (bounded) lalu exit. Test fungsi spesifik: `node --input-type=module -e '...'` vs DB/API asli (jangan lupa `initDb()` dulu kalau butuh DB).
+- **Rate limit**: throttling per-call udah ada (Meteora `withMeteoraPoolLimit` + circuit breaker, AM gate, Birdeye quota-disable, Helius multi-key rotation). Lever untuk menghindari quota exhaustion adalah **outer loop** — pacing (`evalPacingMs`) + budget per-cycle (`maxWalletEvalsPerCycle`) di `src/discovery/per-pool-pipeline.js`.
+- **Webui**: source Next.js di `webui/`, build ke `src/webui-dist/` (gitignored; `npm run webui:build`). `static-server` baca file per-request → rebuild langsung live; perubahan backend (API/decoder/evaluator) butuh `pm2:restart`.
+- **API router** (`src/webui/api-router.js`): `switch(url.pathname)` itu exact-match — route parameterized (`/api/position/:addr`) pakai guard `startsWith`; `/api/position/<addr>` split jadi `["api","position","<addr>"]` jadi address-nya `segments[2]` (bukan `[1]`).
+- **Data posisi**: `position_events` (Meteora `/positions/{addr}/historical`) + bin range on-chain (`src/collector/dlmm-decoder.js`, disc DLMM v2 ada di sana) terisi **on-demand** via `/api/position/:addr` + `/position` telegram cmd; belum auto-sync di evaluator.
+
+---
+
 ## Hal yang Tidak Perlu Dibuat
 
-- Tidak perlu Telegram bot
 - Tidak perlu Discord listener
 - Tidak perlu REPL interaktif
 - Tidak perlu HiveMind sync
-- Tidak perlu UI apapun
 - Tidak perlu `agent.js` / ReAct loop (itu urusan Laminar)
 - Seed wallet **tidak wajib** — discovery engine cukup untuk start
+
+> Catatan: Telegram bot + dashboard Next.js **sudah dibuat** (lihat "Catatan Engineering & Gotchas" di atas); section ini hanya mencakup yang memang di-skip.
 
 Fokus: **discover → evaluate → rank → screen → signal → dataset**

@@ -46,7 +46,10 @@ async function handleWebhook(req, res, secret) {
     // Constant-time compare to avoid a timing oracle on the secret (string !== short-circuits).
     const a = Buffer.from(provided);
     const b = Buffer.from(secret);
-    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
+    a.fill(0);
+    b.fill(0); // don't let the secret linger in the heap
+    if (!ok) {
       log("webhook_warn", `rejected: bad/missing secret (ip=${req.socket.remoteAddress})`);
       res.writeHead(401, { "content-type": "text/plain" });
       res.end("unauthorized");

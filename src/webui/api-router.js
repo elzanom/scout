@@ -177,6 +177,13 @@ export async function handleApi(req, res) {
       }
 
       case "/api/logs": {
+        // Logs contain wallet addresses + system state; the dashboard is bound to 0.0.0.0 and often
+        // Cloudflare-tunneled, so require DASHBOARD_SECRET when it's configured (mirrors /restart).
+        const dashSecret = process.env.DASHBOARD_SECRET || "";
+        if (dashSecret) {
+          const provided = req.headers["x-dashboard-secret"] || q.secret;
+          if (provided !== dashSecret) return json(res, { error: "unauthorized" }, 401);
+        }
         const lines = Math.min(parseInt(q.lines, 10) || 100, 500);
         const level = q.level;
         const today = new Date().toISOString().split("T")[0];

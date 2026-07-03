@@ -91,6 +91,9 @@ export async function sendMessageWithButtons(text, inlineKeyboard) {
 }
 
 export function isAuthorizedIncomingMessage(msg) {
+  // Fail-closed: with no auth configured at all (no chatId AND empty allow-list), refuse inbound
+  // commands — otherwise anyone who finds the bot token could run /status, /wallets, /position, …
+  if (!chatId && ALLOWED_USER_IDS.size === 0) return false;
   const incomingChatId = String(msg.chat?.id || "");
   const senderUserId = msg.from?.id != null ? String(msg.from.id) : null;
   if (chatId && incomingChatId !== String(chatId)) return false;
@@ -166,8 +169,12 @@ async function registerCommands() {
 export function startPolling(onMessage) {
   if (!TOKEN) return;
   loadChatId();
+  if (!chatId && ALLOWED_USER_IDS.size === 0) {
+    log("telegram_error", "refusing to poll: set TELEGRAM_CHAT_ID or TELEGRAM_ALLOWED_USER_IDS to allow inbound commands.");
+    return;
+  }
   if (!chatId) {
-    log("telegram_warn", "TELEGRAM_CHAT_ID not set — inbound bot commands disabled.");
+    log("telegram_warn", "TELEGRAM_CHAT_ID not set — outbound notifications disabled; polling continues (allow-list gated).");
   }
   _polling = true;
   poll(onMessage);

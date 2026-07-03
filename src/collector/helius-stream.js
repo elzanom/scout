@@ -1,4 +1,5 @@
 import http from "http";
+import crypto from "crypto";
 import { fileURLToPath } from "url";
 import { config } from "../../config/config.js";
 import { log, logAction } from "../utils/logger.js";
@@ -41,13 +42,22 @@ async function handleWebhook(req, res, secret) {
   const body = await readBody(req);
 
   if (secret) {
-    const provided = req.headers["x-helius-secret"] || req.headers["x-webhook-secret"];
-    if (provided !== secret) {
+    const provided = req.headers["x-helius-secret"] || req.headers["x-webhook-secret"] || "";
+    // Constant-time compare to avoid a timing oracle on the secret (string !== short-circuits).
+    const a = Buffer.from(provided);
+    const b = Buffer.from(secret);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
       log("webhook_warn", `rejected: bad/missing secret (ip=${req.socket.remoteAddress})`);
       res.writeHead(401, { "content-type": "text/plain" });
       res.end("unauthorized");
       return;
     }
+  } else if (process.env.NODE_ENV === "production") {
+    // Fail-closed in production when no secret is configured: an open webhook writes to the DB.
+    log("webhook_warn", "rejected: no HELIUS_WEBHOOK_SECRET configured in production");
+    res.writeHead(401, { "content-type": "text/plain" });
+    res.end("unauthorized");
+    return;
   }
 
   let payload;

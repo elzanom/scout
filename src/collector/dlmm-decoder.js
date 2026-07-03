@@ -157,3 +157,62 @@ export function binRangeFromDecoded(decoded) {
   }
   return null;
 }
+
+/**
+ * Build a per-bin price ladder + coverage over a position's bin range — Metlex's "Range" view,
+ * without hard-decoding the addLiquidity distribution.
+ *
+ * The per-bin price ratio is DERIVED from the position's own endpoints:
+ *   ratio = (maxPrice/minPrice) ^ (1 / (upperBinId - lowerBinId))     (= 1 + binStep/10000)
+ * and prices are anchored to the pool's active bin/price:
+ *   price(binId) = activePrice * ratio ^ (binId - activeBinId)
+ * (Verified against live Meteora data: adjacent bins differ by exactly (1 + binStep/10000).)
+ *
+ * @param {{lowerBinId:number, upperBinId:number, minPrice:number, maxPrice:number, poolActiveBinId?:number, poolActivePrice?:number, padding?:number}} args
+ * @returns {{ratio:number, lowerBinId:number, upperBinId:number, activeBinId:number|null, activePrice:number|null, bins:Array<{binId:number,price:number,inRange:boolean,isActive:boolean}>}|null}
+ */
+export function computeBinDistribution({
+  lowerBinId,
+  upperBinId,
+  minPrice,
+  maxPrice,
+  poolActiveBinId,
+  poolActivePrice,
+  padding = 3,
+}) {
+  if (
+    !Number.isInteger(lowerBinId) ||
+    !Number.isInteger(upperBinId) ||
+    upperBinId < lowerBinId ||
+    !(minPrice > 0) ||
+    !(maxPrice > 0)
+  ) {
+    return null;
+  }
+  const ratio = Math.pow(maxPrice / minPrice, 1 / (upperBinId - lowerBinId));
+  // Anchor prices to the active bin when available, else to the lower edge.
+  const useActive = Number.isInteger(poolActiveBinId) && poolActivePrice > 0;
+  const anchorBin = useActive ? poolActiveBinId : lowerBinId;
+  const anchorPrice = useActive ? poolActivePrice : minPrice;
+  const priceAt = (binId) => anchorPrice * Math.pow(ratio, binId - anchorBin);
+
+  const from = lowerBinId - padding;
+  const to = upperBinId + padding;
+  const bins = [];
+  for (let binId = from; binId <= to; binId++) {
+    bins.push({
+      binId,
+      price: Number(priceAt(binId).toPrecision(8)),
+      inRange: binId >= lowerBinId && binId <= upperBinId,
+      isActive: useActive && binId === poolActiveBinId,
+    });
+  }
+  return {
+    ratio,
+    lowerBinId,
+    upperBinId,
+    activeBinId: useActive ? poolActiveBinId : null,
+    activePrice: useActive ? poolActivePrice : null,
+    bins,
+  };
+}

@@ -18,6 +18,49 @@ function Card({ label, value, className }) {
   );
 }
 
+function fmtPrice(p) {
+  if (p == null) return "—";
+  if (p >= 1) return p.toFixed(4);
+  if (p >= 1e-4) return p.toFixed(6);
+  return p.toExponential(2);
+}
+
+/** Metlex-style bin distribution strip: in-range bins cyan, active bin green, out-of-range dim. */
+function BinDistribution({ dist }) {
+  const { bins, activeBinId, activePrice, ratio } = dist;
+  if (!bins?.length) return null;
+  const low = bins[0].price;
+  const high = bins[bins.length - 1].price;
+  const bps = ratio && ratio > 1 ? `${((ratio - 1) * 10000).toFixed(0)} bps` : "?";
+  return (
+    <div className="panel" style={{ padding: 10, margin: 0, marginBottom: 12 }}>
+      <div className="small dim" style={{ marginBottom: 6 }}>
+        Bin distribution · {bins.length} bins · step {bps}
+      </div>
+      <div style={{ display: "flex", alignItems: "flex-end", height: 44, gap: 1, marginBottom: 6 }}>
+        {bins.map((b) => (
+          <div
+            key={b.binId}
+            title={`bin ${b.binId} · ${fmtPrice(b.price)}${b.isActive ? " (active)" : b.inRange ? "" : " (out of range)"}`}
+            style={{
+              flex: 1,
+              minWidth: 2,
+              height: b.isActive ? "100%" : b.inRange ? "72%" : "22%",
+              background: b.isActive ? "#39ff14" : b.inRange ? "#00e5ff" : "rgba(255,255,255,0.12)",
+              borderRadius: 1,
+            }}
+          />
+        ))}
+      </div>
+      <div className="dim" style={{ display: "flex", justifyContent: "space-between", fontSize: 10 }}>
+        <span>{fmtPrice(low)}</span>
+        <span>active {fmtPrice(activePrice)} · bin {activeBinId ?? "?"}</span>
+        <span>{fmtPrice(high)}</span>
+      </div>
+    </div>
+  );
+}
+
 /** Metlex-style position detail: PnL ledger + on-chain bin range, from /api/position/:addr?decode=1. */
 export default function PositionDetail({ positionId, onClose }) {
   const { data, loading, error } = useApi(
@@ -72,6 +115,8 @@ export default function PositionDetail({ positionId, onClose }) {
                 <span className="small dim">pool <AddressCell address={position.pool_address} type="pool" head={6} tail={4} /></span>
               )}
             </div>
+
+            {decoded?.binDistribution && <BinDistribution dist={decoded.binDistribution} />}
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 12 }}>
               <Card label="Deposit" value={fmtUsd(summary.total_deposit_usd)} />

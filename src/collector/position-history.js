@@ -1,7 +1,7 @@
-import { fetchPositionEvents } from "../screener/metrics-fetcher.js";
+import { fetchPositionEvents, fetchPoolPositionPnl } from "../screener/metrics-fetcher.js";
 import { upsertPositionEvent } from "../db/position-events.js";
 import { heliusApiPost } from "../rpc/helius-router.js";
-import { decodeDlmmInstructionsInTx, binRangeFromDecoded } from "./dlmm-decoder.js";
+import { decodeDlmmInstructionsInTx, binRangeFromDecoded, computeBinDistribution } from "./dlmm-decoder.js";
 import { log } from "../utils/logger.js";
 
 /**
@@ -58,10 +58,10 @@ export async function syncPositionEvents(positionAddress) {
  * (the remove / claim_fee event signature) is derived automatically, which yields the full
  * [lower, upper] range (remove_liquidity_by_range_2 / claim_fee_2 carry both bin ids).
  *
- * @param {{ txSig?: string, events?: object[] }} opts
- * @returns {Promise<{ signature, slot, blockTime, binRange, instructions }|null>}
+ * @param {{ txSig?: string, events?: object[], positionId?: string, poolAddress?: string, walletAddress?: string }} opts
+ * @returns {Promise<{ signature, slot, blockTime, binRange, binDistribution, instructions }|null>}
  */
-export async function decodePositionBinRange({ txSig, events, positionId } = {}) {
+export async function decodePositionBinRange({ txSig, events, positionId, poolAddress, walletAddress } = {}) {
   const sig =
     txSig ||
     (Array.isArray(events) && events.find((e) => e.event_type === "remove")?.signature) ||
@@ -92,15 +92,47 @@ export async function decodePositionBinRange({ txSig, events, positionId } = {})
       if (d.amountY != null) o.amountY = d.amountY;
       return o;
     };
+    // Enrich with the per-bin price ladder (Metlex "Range" view) when we know pool+wallet —
+    // matches this position in /positions/{pool}/pnl and derives the per-bin ratio from its
+    // own minPrice/maxPrice. Best-effort: null when Meteora is unavailable or the position
+    // isn't returned (e.g. closed long ago).
+    let binDistribution = null;
+    if (poolAddress && walletAddress && positionId) {
+      try {
+        binDistribution = await fetchPositionBinDetail(poolAddress, walletAddress, positionId);
+      } catch (err) {
+        log("position_history_warn", `bin distribution ${positionId.slice(0, 8)}…: ${err.message}`);
+      }
+    }
     return {
       signature: sig,
       slot: tx.slot ?? null,
       blockTime: tx.timestamp ?? tx.blockTime ?? null,
       binRange: binRangeFromDecoded(decoded),
+      binDistribution,
       instructions: decoded.map(compact),
     };
   } catch (err) {
     log("position_history_warn", `decode bin range ${sig.slice(0, 8)}…: ${err.message}`);
     return null;
   }
+}
+
+/**
+ * Fetch this position's bin detail (minPrice/maxPrice/poolActiveBinId/poolActivePrice) by matching
+ * its positionAddress in /positions/{pool}/pnl, then compute the per-bin distribution.
+ * @returns {Promise<object|null>} computeBinDistribution result, or null.
+ */
+async function fetchPositionBinDetail(poolAddress, walletAddress, positionAddress) {
+  const positions = await fetchPoolPositionPnl(walletAddress, poolAddress, { status: "all", pageSize: 100 });
+  const match = (positions || []).find((p) => p.positionAddress === positionAddress);
+  if (!match) return null;
+  return computeBinDistribution({
+    lowerBinId: match.lowerBinId,
+    upperBinId: match.upperBinId,
+    minPrice: match.minPrice,
+    maxPrice: match.maxPrice,
+    poolActiveBinId: match.poolActiveBinId,
+    poolActivePrice: match.poolActivePrice,
+  });
 }

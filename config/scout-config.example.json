@@ -40,7 +40,7 @@
   "heliusWebhookEnabled": true,
   "signalScanEnabled": false,
   "// Collection": "",
-  "backfillDays": 90,
+  "backfillDays": 30,
   "snapshotIntervalMinutes": 15,
   "walletRankUpdateIntervalMinutes": 60,
   "screeningIntervalMinutes": 15,

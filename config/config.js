@@ -214,6 +214,13 @@ export const config = {
     exportPath: resolvePath(m.datasetExportPath),
     autoExportOnClose: m.autoExportOnClose,
   },
+  scoring: {
+    // Bayesian smoothing of win-rate so tiny-N wallets (1W/0L) don't outrank big-N ones.
+    // smoothed_wr = (wins + alpha * prior) / (total + alpha). Default alpha=10 + prior=0.5
+    // means a wallet needs ~10 closed-decided positions before its WR dominates the prior.
+    winRatePrior: m.winRatePrior ?? 0.5,
+    winRateAlpha: m.winRateAlpha ?? 10,
+  },
   signalWeights: {
     enabled: m.signalWeightsEnabled ?? true,
     windowDays: m.signalWeightsWindowDays ?? 60,
@@ -222,6 +229,19 @@ export const config = {
     decayFactor: m.signalWeightsDecayFactor ?? 0.95,
     weightFloor: m.signalWeightsWeightFloor ?? 0.3,
     weightCeiling: m.signalWeightsWeightCeiling ?? 2.5,
+  },
+  manualAlerts: {
+    enabled: m.manualAlertsEnabled ?? false,
+    watchlistFile: m.manualAlertWatchlistFile ? resolvePath(m.manualAlertWatchlistFile) : resolvePath("./config/manual-watchlist.json"),
+    intervalMinutes: m.manualAlertIntervalMinutes ?? 5,
+    cooldownMinutes: m.manualAlertCooldownMinutes ?? 60,
+    minDeploymentUsd: m.manualAlertMinDeploymentUsd ?? 100,
+    captureIndicators: m.manualAlertCaptureIndicators ?? true,
+    indicatorTimeframes: m.manualAlertIndicatorTimeframes ?? ["5m", "15m", "1h"],
+    requireKnownPool: m.manualAlertRequireKnownPool ?? false,
+    // Polling concurrency for watched wallets (avoid Meteora rate-limits)
+    maxWalletsPerCycle: m.manualAlertMaxWalletsPerCycle ?? 50,
+    maxPoolsPerWallet: m.manualAlertMaxPoolsPerWallet ?? 20,
   },
   seed: {
     walletsFile: m.seedWalletsFile ? resolvePath(m.seedWalletsFile) : m.seedWalletsFile,

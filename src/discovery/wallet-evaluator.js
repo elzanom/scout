@@ -8,6 +8,7 @@ import { getWallet, listWallets, updateWalletMetrics, setWalletTier, bumpEvaluat
 import { calculateWalletScore } from "../wallets/scoring.js";
 import { deriveWalletExtras } from "../wallets/tag-computer.js";
 import { patchStagedSignals } from "../signals/stage-signals.js";
+import { bayesianWinRate } from "../utils/stats.js";
 
 const num = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
 
@@ -78,9 +79,18 @@ export function applyEvaluation(address, aggregate, positions = [], { amUnavaila
 
   const stats = positionStats(address);
   const closedDecided = stats.won + stats.lost;
-  const winRate = closedDecided >= 3
+  // Raw win rate (used for study_win_rate patch only — kept for downstream ML).
+  const rawWinRate = closedDecided >= 3
     ? stats.won / closedDecided
     : (aggregate && num(aggregate.win_rate_pct) > 0 ? num(aggregate.win_rate_pct) / 100 : 0);
+  // Bayesian-smoothed WR for tier/score decisions. Shrinks tiny-N wallets toward the prior so
+  // a wallet with 1W/0L doesn't outrank 100W/40L. Falls back to Agent Meridian aggregate when local
+  // decided positions are too few to smooth meaningfully. Configurable via scoring.winRatePrior/Alpha.
+  const wrPrior = num(config.scoring?.winRatePrior, 0.5);
+  const wrAlpha = num(config.scoring?.winRateAlpha, 10);
+  const winRate = closedDecided >= 3
+    ? bayesianWinRate(stats.won, closedDecided, wrPrior, wrAlpha)
+    : (rawWinRate || wrPrior);
 
   // total_positions: when requireSolPair is on, only count SOL-pair positions.
   const totalPositions = config.screening.requireSolPair

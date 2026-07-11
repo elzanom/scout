@@ -38,7 +38,7 @@
   "minCombinedConfidence": 0.7,
   "signalExpiryMinutes": 60,
   "heliusWebhookEnabled": true,
-  "signalScanEnabled": true,
+  "signalScanEnabled": false,
   "// Collection": "",
   "backfillDays": 90,
   "snapshotIntervalMinutes": 15,
@@ -63,7 +63,7 @@
   "// Seed (opsional)": "",
   "seedWalletsFile": "",
   "seedWalletsOnStartup": false,
-  "positionNotifyEnabled": true,
+  "positionNotifyEnabled": false,
   "positionNotifyWindowHours": 2,
   "positionNotifyBatch": 5,
   "evalPacingMs": 2000,
@@ -75,5 +75,14 @@
   "maxMcap": 20000000,
   "minHolders": 300,
   "positionEventBackfillEnabled": false,
-  "positionEventBackfillBatch": 5
+  "positionEventBackfillBatch": 5,
+  "// Bayesian win-rate smoothing (avoid 1W/0L outranking 100W/40L)": "",
+  "winRatePrior": 0.5,
+  "winRateAlpha": 10,
+  "// Co-entry correlation boost (gated until top-wallet list is large enough)": "",
+  "coEntryBoostEnabled": false,
+  "coEntryMinTopWallets": 20,
+  "coEntryWindowHours": 4,
+  "coEntryBonusPerWallet": 0.1,
+  "coEntryBoostCeiling": 0.3
 }

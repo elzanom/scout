@@ -161,19 +161,19 @@ async function cyclePositionNotifications() {
 
 /**
  * Background backfill of position-event timelines: sync /positions/{addr}/historical for tracked/top
- * wallets' CLOSED positions that have no event ledger yet (most recent first). Bounded + paced so
- * position_events populates over time without on-demand clicks. (syncPositionEvents bypasses the
- * discovery breaker + is one Meteora call per position, so this is gentle on rate limits.)
+ * wallets' positions (open OR closed) that have no event ledger yet, ordered by most recent activity.
+ * Open positions matter most for the dashboard (live bin range + live PnL). Bounded + paced — one
+ * Meteora call per position, so even batch=5/cycle is gentle on rate limits. NOT EXISTS prevents
+ * re-sync once any event row exists (avoids duplicate insert on hot positions).
  */
 async function cyclePositionEventBackfill() {
   const batch = Number(config.signals.positionEventBackfillBatch) || 5;
   if (batch <= 0) return;
   const rows = getDb().prepare(
     `SELECT p.id FROM positions p
-     WHERE p.status = 'closed'
-       AND p.wallet_address IN (SELECT address FROM wallets WHERE is_top_wallet = 1 OR status = 'tracked')
+     WHERE p.wallet_address IN (SELECT address FROM wallets WHERE is_top_wallet = 1 OR status = 'tracked')
        AND NOT EXISTS (SELECT 1 FROM position_events pe WHERE pe.position_id = p.id)
-     ORDER BY p.exit_timestamp DESC
+     ORDER BY COALESCE(p.exit_timestamp, p.entry_timestamp) DESC
      LIMIT ?`,
   ).all(batch);
   if (!rows.length) return;

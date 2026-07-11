@@ -102,7 +102,7 @@ async function lpGet(path) {
       throw e;
     }
     return res.json();
-  }));
+  }, { skipRetryOn500: true }));
 }
 
 /** Map an Agent Meridian topPosition into scout's positions-row shape. */

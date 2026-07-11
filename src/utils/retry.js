@@ -35,6 +35,8 @@ function backoffDelay(attempt, baseDelayMs, maxDelayMs) {
  * @param {number} [opts.baseDelayMs=500]
  * @param {number} [opts.maxDelayMs=30000]
  * @param {number[]} [opts.retryOnStatus=[429,500,502,503,504]]
+ * @param {boolean} [opts.skipRetryOn500=false] when true, 500 responses do not retry
+ *   (persistent server issue, retrying just wastes time — let circuit breaker handle it).
  * @param {(err: Error, attempt: number, waitMs: number) => void} [opts.onRetry]
  * @returns {Promise<any>}
  */
@@ -44,6 +46,7 @@ export async function withRetry(fn, opts = {}) {
     baseDelayMs = 500,
     maxDelayMs = 30_000,
     retryOnStatus = [429, 500, 502, 503, 504],
+    skipRetryOn500 = false,
     onRetry,
   } = opts;
 
@@ -54,6 +57,9 @@ export async function withRetry(fn, opts = {}) {
     } catch (error) {
       lastError = error;
       const status = Number(error?.status);
+      // 500 means persistent upstream issue — bail fast instead of wasting retry budget.
+      // Skip when caller explicitly opts in via skipRetryOn500=true.
+      if (skipRetryOn500 && status === 500) throw error;
       const retryable = isRetryableStatus(status, retryOnStatus)
         || (status == null && isNetworkError(error));
       const isLast = attempt >= maxAttempts;
@@ -81,6 +87,7 @@ export async function withRetry(fn, opts = {}) {
  *
  * @param {(attempt: number) => Promise<any>} fn
  * @param {object} [opts] forwarded to withRetry (sensible Helius defaults)
+ * @param {boolean} [opts.skipRetryOn500=false] bail fast on persistent 500s
  */
 export async function withHeliusRetry(fn, opts = {}) {
   const wrapped = async (attempt) => {

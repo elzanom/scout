@@ -205,6 +205,9 @@ export const config = {
     coEntryWindowHours: m.coEntryWindowHours ?? 4,
     coEntryBonusPerWallet: m.coEntryBonusPerWallet ?? 0.10,
     coEntryBoostCeiling: m.coEntryBoostCeiling ?? 0.30,
+    // Pool-regime fit modulation: spot wallet in trending pool → boost, bid_ask in range → boost.
+    // Geometric mean of strategy × range-style fit, clamped [0.75, 1.25].
+    regimeBoostEnabled: m.regimeBoostEnabled ?? false,
   },
   collection: {
     backfillDays: m.backfillDays,

@@ -6,6 +6,7 @@ import { getWallet } from "../db/wallets.js";
 import { calculateConfidence } from "../wallets/scoring.js";
 import { emitSignal } from "./emitter.js";
 import { getCoEntryBoost } from "./co-entry.js";
+import { regimeFromPool, regimeFitScore } from "../pools/regime.js";
 
 /**
  * Double validation (SPEC §7): a top wallet entering a pool becomes a signal only if
@@ -16,6 +17,12 @@ import { getCoEntryBoost } from "./co-entry.js";
  * Co-entry boost (signals.coEntryBoostEnabled): when 2+ top wallets enter the same pool in a
  * short window, we add a confidence bonus (capped) — multiple independent top-LP confirmations
  * are the strongest signal we have.
+ *
+ * Regime-fit modulation (signals.regimeBoostEnabled): when enabled, the wallet-side confidence
+ * component is multiplied by a regime-fit score (spot wallets in trending pools get +20%,
+ * bid_ask wallets in range pools get +20%, mismatched get penalty down to -20%). Geometric
+ * mean of strategy × range-style fit. This is opt-in because it can suppress signals for
+ * wallets whose preferred_strategy hasn't been populated yet.
  *
  * Returns the verdict with wallet/pool/confidence/reasons/suggested params.
  */
@@ -35,13 +42,33 @@ export async function validateSignal(walletAddress, poolAddress) {
   const pool = screened.pool;
   reasons.push("pool_passed_screening");
 
-  // Base confidence + optional co-entry boost
-  const baseConfidence = calculateConfidence(wallet.score, pool.pool_score);
+  // Regime classification + wallet fit (gated by config.signals.regimeBoostEnabled).
+  const regime = regimeFromPool(pool);
+  const regimeFit = regimeFitScore(wallet, regime);
+
+  // Base confidence = walletScore×0.4 + poolScore×0.6 (normalize walletScore first).
+  // With regimeBoostEnabled, the wallet component gets multiplied by regimeFit.multiplier.
+  // Net effect: a spot wallet entering a range pool gets a softer penalty than a perfect
+  // pool but no wallet fit. Confidence can never go negative (clamped at 0).
+  const wNorm = Math.min(1, Math.max(0, (Number(wallet.score) || 0) / 100));
+  const pNorm = Math.min(1, Math.max(0, Number(pool.pool_score) || 0));
+  const regimeOn = config.signals?.regimeBoostEnabled === true;
+  const walletComponent = wNorm * (regimeOn ? regimeFit.multiplier : 1.0);
+  const baseConfidence = Math.round((walletComponent * 0.4 + pNorm * 0.6) * 1000) / 1000;
+
+  // Co-entry boost: 2+ top wallets in same pool → confidence bonus (capped).
   const coEntry = getCoEntryBoost(poolAddress, { excludeWallet: walletAddress });
   const confidence = Math.min(1, baseConfidence + coEntry.bonus);
   if (coEntry.bonus > 0) reasons.push(`co_entry_+${coEntry.bonus.toFixed(2)}`);
+  if (regimeOn && regimeFit.multiplier !== 1.0) {
+    reasons.push(`regime_${regime}_fit_${regimeFit.multiplier.toFixed(2)}`);
+  }
   if (confidence < config.signals.minCombinedConfidence) {
-    return { passes: false, reasons: [`confidence ${confidence.toFixed(3)} < ${config.signals.minCombinedConfidence}`], wallet, pool, confidence };
+    return {
+      passes: false,
+      reasons: [`confidence ${confidence.toFixed(3)} < ${config.signals.minCombinedConfidence}`],
+      wallet, pool, confidence, regime, regimeFit,
+    };
   }
 
   // Suggested params: the top wallet's own bin range in this pool (their proven config), else just bin_step
@@ -54,6 +81,8 @@ export async function validateSignal(walletAddress, poolAddress) {
     wallet,
     pool,
     confidence,
+    regime,
+    regimeFit,
     coEntry,
     reasons,
     suggested: {
@@ -90,6 +119,8 @@ export async function processWalletEntry(walletAddress, poolAddress) {
     suggested: verdict.suggested,
     poolMetrics: verdict.poolMetrics,
     coEntry: verdict.coEntry,
+    regime: verdict.regime,
+    regimeFit: verdict.regimeFit,
   });
   if (!signal) return { emitted: false, reasons: [...verdict.reasons, "cooldown"] };
   return { emitted: true, signal, reasons: verdict.reasons };

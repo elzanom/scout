@@ -84,5 +84,7 @@
   "coEntryMinTopWallets": 20,
   "coEntryWindowHours": 4,
   "coEntryBonusPerWallet": 0.1,
-  "coEntryBoostCeiling": 0.3
+  "coEntryBoostCeiling": 0.3,
+  "// Pool-regime fit modulation (gated, opt-in)": "",
+  "regimeBoostEnabled": false
 }

@@ -11,8 +11,13 @@ const MAX_FILE_SIGNALS = 200; // cap signals-output.json size (keep most recent)
 /**
  * Persist a validated signal to the signals table and emit it to the configured output
  * (file | rest | stdout). Returns the SPEC-format signal object.
+ *
+ * Optional metadata (regime, regimeFit, coEntry) is attached to the emitted signal payload
+ * but not stored in dedicated DB columns — it's already captured in validation_reasons
+ * (JSON) for analysis. Keeping the schema stable for now; a future migration can promote
+ * these to first-class columns if Laminar starts consuming them.
  */
-export async function emitSignal({ wallet, pool, confidence, reasons, suggested, poolMetrics }) {
+export async function emitSignal({ wallet, pool, confidence, reasons, suggested, poolMetrics, regime, regimeFit, coEntry }) {
   const ts = now();
   const tokenPair = pool.token_pair || (pool.base?.symbol && pool.quote?.symbol
     ? `${pool.base.symbol}/${pool.quote.symbol}`
@@ -63,6 +68,13 @@ export async function emitSignal({ wallet, pool, confidence, reasons, suggested,
     pool_metrics: poolMetrics,
     suggested,
     validation_reasons: reasons,
+    regime: regime ?? null,
+    regime_fit: regimeFit ? {
+      multiplier: regimeFit.multiplier,
+      strategy_fit: regimeFit.strategyFit,
+      range_fit: regimeFit.rangeFit,
+    } : null,
+    co_entry: coEntry ? { count: coEntry.coEntries, bonus: coEntry.bonus } : null,
     created_at: ts,
   };
 

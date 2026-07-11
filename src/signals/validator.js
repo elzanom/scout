@@ -5,12 +5,18 @@ import { screenPool } from "../screener/pool-screener.js";
 import { getWallet } from "../db/wallets.js";
 import { calculateConfidence } from "../wallets/scoring.js";
 import { emitSignal } from "./emitter.js";
+import { getCoEntryBoost } from "./co-entry.js";
 
 /**
  * Double validation (SPEC §7): a top wallet entering a pool becomes a signal only if
  *   1. the wallet is a top wallet with score >= minWalletScore, AND
  *   2. the pool passes screening, AND
  *   3. combined confidence >= minCombinedConfidence.
+ *
+ * Co-entry boost (signals.coEntryBoostEnabled): when 2+ top wallets enter the same pool in a
+ * short window, we add a confidence bonus (capped) — multiple independent top-LP confirmations
+ * are the strongest signal we have.
+ *
  * Returns the verdict with wallet/pool/confidence/reasons/suggested params.
  */
 export async function validateSignal(walletAddress, poolAddress) {
@@ -29,8 +35,11 @@ export async function validateSignal(walletAddress, poolAddress) {
   const pool = screened.pool;
   reasons.push("pool_passed_screening");
 
-  // Confidence gate
-  const confidence = calculateConfidence(wallet.score, pool.pool_score);
+  // Base confidence + optional co-entry boost
+  const baseConfidence = calculateConfidence(wallet.score, pool.pool_score);
+  const coEntry = getCoEntryBoost(poolAddress, { excludeWallet: walletAddress });
+  const confidence = Math.min(1, baseConfidence + coEntry.bonus);
+  if (coEntry.bonus > 0) reasons.push(`co_entry_+${coEntry.bonus.toFixed(2)}`);
   if (confidence < config.signals.minCombinedConfidence) {
     return { passes: false, reasons: [`confidence ${confidence.toFixed(3)} < ${config.signals.minCombinedConfidence}`], wallet, pool, confidence };
   }
@@ -45,6 +54,7 @@ export async function validateSignal(walletAddress, poolAddress) {
     wallet,
     pool,
     confidence,
+    coEntry,
     reasons,
     suggested: {
       bin_step: pool.bin_step,
@@ -79,6 +89,7 @@ export async function processWalletEntry(walletAddress, poolAddress) {
     reasons: verdict.reasons,
     suggested: verdict.suggested,
     poolMetrics: verdict.poolMetrics,
+    coEntry: verdict.coEntry,
   });
   if (!signal) return { emitted: false, reasons: [...verdict.reasons, "cooldown"] };
   return { emitted: true, signal, reasons: verdict.reasons };

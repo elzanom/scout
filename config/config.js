@@ -197,6 +197,14 @@ export const config = {
     positionNotifyBatch: m.positionNotifyBatch ?? 5,
     positionEventBackfillEnabled: m.positionEventBackfillEnabled ?? false,
     positionEventBackfillBatch: m.positionEventBackfillBatch ?? 5,
+    // Co-entry correlation boost: 2+ top wallets entering same pool within window → confidence bonus.
+    // Gated by minTopWallets (boost inactive until the top list is large enough that coincidences are
+    // statistically meaningful).
+    coEntryBoostEnabled: m.coEntryBoostEnabled ?? false,
+    coEntryMinTopWallets: m.coEntryMinTopWallets ?? 20,
+    coEntryWindowHours: m.coEntryWindowHours ?? 4,
+    coEntryBonusPerWallet: m.coEntryBonusPerWallet ?? 0.10,
+    coEntryBoostCeiling: m.coEntryBoostCeiling ?? 0.30,
   },
   collection: {
     backfillDays: m.backfillDays,
